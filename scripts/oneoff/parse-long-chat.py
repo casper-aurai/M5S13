@@ -605,32 +605,128 @@ def validate_markdown(md: str) -> List[str]:
 
     return issues
 
-def find_mermaid_blocks(md: str) -> List[str]:
-    """Extract mermaid diagram blocks from markdown."""
-    blocks = []
-    lines = md.split('\n')
+def split_into_sections(content: str, output_dir: str) -> None:
+    """Split markdown content into organized sections and files."""
+    import os
+    import re
+    from pathlib import Path
+
+    # Create output directory
+    sections_dir = Path(output_dir) / "sections"
+    sections_dir.mkdir(parents=True, exist_ok=True)
+
+    lines = content.split('\n')
+    sections = []
+    current_section = None
+    section_content = []
+    in_code_block = False
+    code_block_fence = ""
+
     i = 0
-
     while i < len(lines):
-        line = lines[i].strip()
-        if line.startswith("```mermaid"):
-            # Found start of mermaid block
-            block_lines = []
-            i += 1
-            while i < len(lines):
-                if lines[i].strip().startswith("```"):
-                    # End of block
-                    blocks.append('\n'.join(block_lines))
-                    break
-                block_lines.append(lines[i])
-                i += 1
-            else:
-                # Unclosed block
-                blocks.append('\n'.join(block_lines))
-        else:
-            i += 1
+        line = lines[i]
 
-    return blocks
+        # Track code blocks
+        if line.strip().startswith("```") or line.strip().startswith("~~~"):
+            if not in_code_block:
+                in_code_block = True
+                code_block_fence = line.strip()[:3]  # Get fence type
+            else:
+                fence_type = line.strip()[:3] if line.strip()[:3] in ["```", "~~~"] else ""
+                if fence_type == code_block_fence:
+                    in_code_block = False
+                    code_block_fence = ""
+
+        # Look for section headers (not inside code blocks)
+        if not in_code_block and re.match(r'^#{1,6}\s+', line):
+            # Save previous section if exists
+            if current_section and section_content:
+                sections.append({
+                    'title': current_section,
+                    'content': '\n'.join(section_content).strip(),
+                    'level': current_section.count('#')
+                })
+
+            # Start new section
+            current_section = line.strip()
+            section_content = [line]
+        elif current_section:
+            section_content.append(line)
+
+        i += 1
+
+    # Add final section
+    if current_section and section_content:
+        sections.append({
+            'title': current_section,
+            'content': '\n'.join(section_content).strip(),
+            'level': current_section.count('#')
+        })
+
+    # Organize sections into categories
+    conversations = []
+    workflows = []
+    technical_specs = []
+    other = []
+
+    for section in sections:
+        title = section['title'].lower()
+        content = section['content']
+
+        if any(keyword in title for keyword in ['user', 'assistant', 'conversation']):
+            conversations.append(section)
+        elif any(keyword in title for keyword in ['workflow', 'temporal', 'activity', 'process']):
+            workflows.append(section)
+        elif any(keyword in content[:500].lower() for keyword in ['docker', 'compose', 'service', 'temporal', 'memgraph']):
+            technical_specs.append(section)
+        else:
+            other.append(section)
+
+    # Create organized directory structure
+    categories = {
+        'conversations': conversations,
+        'workflows': workflows,
+        'technical-specifications': technical_specs,
+        'other': other
+    }
+
+    for category_name, category_sections in categories.items():
+        category_dir = sections_dir / category_name
+        category_dir.mkdir(exist_ok=True)
+
+        for idx, section in enumerate(category_sections, 1):
+            # Create clean filename from title
+            title_clean = re.sub(r'^#{1,6}\s+', '', section['title'])
+            title_clean = re.sub(r'[^\w\s-]', '', title_clean)  # Remove special chars
+            title_clean = re.sub(r'\s+', '-', title_clean.strip())  # Replace spaces with hyphens
+            title_clean = title_clean.lower()[:50]  # Limit length
+
+            if not title_clean:
+                title_clean = f"section-{idx}"
+
+            filename = f"{idx:03d}-{title_clean}.md"
+            filepath = category_dir / filename
+
+            # Write section file
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(f"{section['title']}\n\n{section['content']}\n")
+
+    # Create index file
+    index_path = sections_dir / "README.md"
+    with open(index_path, 'w', encoding='utf-8') as f:
+        f.write("# Foundation Documentation - Organized Sections\n\n")
+        f.write("This directory contains the foundation documentation split into organized sections.\n\n")
+
+        for category_name, category_sections in categories.items():
+            if category_sections:
+                f.write(f"## {category_name.replace('-', ' ').title()}\n\n")
+                for section in category_sections:
+                    title_clean = re.sub(r'^#{1,6}\s+', '', section['title'])
+                    f.write(f"- {title_clean}\n")
+                f.write("\n")
+
+    print(f"INFO: Created organized section structure in {sections_dir}")
+    print(f"INFO: Split into {len(conversations)} conversations, {len(workflows)} workflows, {len(technical_specs)} technical specs, {len(other)} other sections")
 
 def html_to_markdown(html_text: str, src_path: str, custom_title: Optional[str]) -> str:
     logger.info("Starting HTML to Markdown conversion")
@@ -684,6 +780,7 @@ Examples:
   %(prog)s conversation.html
   %(prog)s conversation.html -o output.md
   %(prog)s conversation.html --debug --validate
+  %(prog)s conversation.html --split-sections --sections-dir docs/organized
         """
     )
     p.add_argument("html", help="Path to ChatGPT HTML export (e.g., foundation.html)")
@@ -693,7 +790,8 @@ Examples:
     p.add_argument("-v", "--validate", action="store_true", help="Validate generated markdown")
     p.add_argument("--dry-run", action="store_true", help="Show what would be done without writing files")
     p.add_argument("--show-mermaid", action="store_true", help="Show detected mermaid diagrams")
-    p.add_argument("--encoding", default="utf-8", help="Input file encoding (default: utf-8)")
+    p.add_argument("--split-sections", action="store_true", help="Split output into organized sections in subdirectories")
+    p.add_argument("--sections-dir", default="docs/sections", help="Directory to store organized sections (default: docs/sections)")
 
     args = p.parse_args(argv)
 
@@ -743,8 +841,9 @@ Examples:
         else:
             print("INFO: No mermaid diagrams found")
 
-    # Print transformation summary
-    print_transform_summary()
+    if args.split_sections:
+        print("INFO: Splitting into organized sections...")
+        split_into_sections(md, args.sections_dir)
 
     if args.dry_run:
         print("DRY RUN - Would write the following markdown:")
