@@ -572,7 +572,29 @@ def validate_markdown(md: str) -> List[str]:
 
     # Check for common markdown issues
     lines = md.split('\n')
+    in_code_block = False
+    current_fence = ""
+
     for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+
+        # Track code block state
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            if not in_code_block:
+                in_code_block = True
+                current_fence = stripped.split()[0]  # Get the fence type
+            else:
+                # Check if this is the closing fence
+                fence_type = stripped.split()[0] if stripped.split() else ""
+                if fence_type == current_fence:
+                    in_code_block = False
+                    current_fence = ""
+            continue
+
+        # Skip validation inside code blocks
+        if in_code_block:
+            continue
+
         # Check for headings without space after #
         if re.match(r'^#{1,6}[^ #]', line):
             issues.append(f"Line {i}: Heading without space after #")
