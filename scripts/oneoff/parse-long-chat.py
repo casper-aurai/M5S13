@@ -64,10 +64,13 @@ MERMAID_PATTERNS = (
     re.compile(r"mermaid", re.IGNORECASE),
     re.compile(r"diagram", re.IGNORECASE),
     re.compile(r"flowchart|gantt|sequenceDiagram|classDiagram|stateDiagram|journey|pie|requirement|gitgraph|timeline", re.IGNORECASE),
+    re.compile(r"graph\s+(?:TD|TB|BT|RL|LR)", re.IGNORECASE),
     re.compile(r"flowchart\s+(?:TD|TB|BT|RL|LR)", re.IGNORECASE),
     # Additional patterns for edge cases
     re.compile(r"subgraph|direction|classDef", re.IGNORECASE),
     re.compile(r"-->|-\.-|\.->|---", re.IGNORECASE),  # Common mermaid arrows
+    # Implicit graph types (graph TB, graph TD, etc.)
+    re.compile(r"^graph\s+(?:TB|TD|BT|RL|LR)", re.MULTILINE),
 )
 
 # --- Utilities ----------------------------------------------------------------
