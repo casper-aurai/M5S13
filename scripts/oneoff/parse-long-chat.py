@@ -31,9 +31,11 @@ LANG_PATTERNS = (
 )
 
 MERMAID_PATTERNS = (
-    re.compile(r"mermaid"),
-    re.compile(r"diagram"),
-    re.compile(r"flowchart|gantt|sequenceDiagram|classDiagram|stateDiagram|journey|pie|requirement"),
+    re.compile(r"mermaid", re.IGNORECASE),
+    re.compile(r"diagram", re.IGNORECASE),
+    re.compile(r"flowchart|gantt|sequenceDiagram|classDiagram|stateDiagram|journey|pie|requirement|gitgraph|timeline", re.IGNORECASE),
+    re.compile(r"graph\s+(?:TD|TB|BT|RL|LR)", re.IGNORECASE),
+    re.compile(r"flowchart\s+(?:TD|TB|BT|RL|LR)", re.IGNORECASE),
 )
 
 # --- Utilities ----------------------------------------------------------------
@@ -106,12 +108,12 @@ def guess_code_language(tag: Tag) -> Optional[str]:
     return None
 
 def fence_code(code: str, lang: Optional[str]) -> str:
-    # Special handling for mermaid diagrams
+    # Special handling for mermaid diagrams - use backticks for better compatibility
     if lang == "mermaid":
         # Use backticks for mermaid diagrams as they're more widely supported
-        return f"```{lang}\n{code.rstrip()}\n```"
+        return f"```mermaid\n{code.rstrip()}\n```"
 
-    # Ensure no trailing spaces and consistent newlines inside code.
+    # For other languages, ensure no trailing spaces and consistent newlines inside code.
     code = code.replace("\r\n", "\n").replace("\r", "\n")
     # Avoid triple-tilde conflicts: if code contains ~~~, lengthen the fence.
     fence = "~~~"
@@ -129,6 +131,26 @@ def text_of(tag: Tag) -> str:
     # Get visible text with single newlines between block children.
     # Avoid including script/style text; BeautifulSoup excludes them by default.
     return tag.get_text(separator="\n", strip=True)
+
+def extract_mermaid_content(tag: Tag) -> Optional[str]:
+    """Extract raw mermaid content from HTML tags, preserving exact syntax."""
+    # Look for mermaid in class names or content
+    classes = tag.get("class", []) or []
+    class_str = " ".join(classes).lower()
+
+    for pattern in MERMAID_PATTERNS:
+        if pattern.search(class_str):
+            # Extract raw text content
+            content = tag.get_text("\n")
+            return content.strip()
+
+    # Check if content contains mermaid patterns
+    content = tag.get_text("\n")
+    for pattern in MERMAID_PATTERNS:
+        if pattern.search(content):
+            return content.strip()
+
+    return None
 
 # --- Block conversion ----------------------------------------------------------
 
@@ -203,6 +225,12 @@ def convert_block(node: Tag) -> Optional[str]:
     if name == "pre":
         # Block code
         lang = guess_code_language(node)
+
+        # Special handling for mermaid diagrams
+        mermaid_content = extract_mermaid_content(node)
+        if mermaid_content and (lang == "mermaid" or not lang):
+            return fence_code(mermaid_content, "mermaid")
+
         code_el = node.find("code")
         raw = code_el.get_text("\n") if code_el else node.get_text("\n")
         return fence_code(raw, lang)
@@ -358,6 +386,59 @@ def build_frontmatter(title: str, src_path: str, soup: BeautifulSoup) -> str:
 
 # --- Main ---------------------------------------------------------------------
 
+def validate_markdown(md: str) -> List[str]:
+    """Basic validation for markdown content."""
+    issues = []
+
+    # Check for unmatched code block fences
+    backtick_blocks = md.count("```")
+    if backtick_blocks % 2 != 0:
+        issues.append("Unmatched backtick code block fences")
+
+    tilde_blocks = md.count("~~~")
+    if tilde_blocks % 2 != 0:
+        issues.append("Unmatched tilde code block fences")
+
+    # Check for common markdown issues
+    lines = md.split('\n')
+    for i, line in enumerate(lines, 1):
+        # Check for headings without space after #
+        if re.match(r'^#{1,6}[^ #]', line):
+            issues.append(f"Line {i}: Heading without space after #")
+
+        # Check for links without proper brackets
+        if '[[' in line and ']]' not in line:
+            issues.append(f"Line {i}: Potential malformed wikilink")
+
+    return issues
+
+def find_mermaid_blocks(md: str) -> List[str]:
+    """Extract mermaid diagram blocks from markdown."""
+    blocks = []
+    lines = md.split('\n')
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("```mermaid"):
+            # Found start of mermaid block
+            block_lines = []
+            i += 1
+            while i < len(lines):
+                if lines[i].strip().startswith("```"):
+                    # End of block
+                    blocks.append('\n'.join(block_lines))
+                    break
+                block_lines.append(lines[i])
+                i += 1
+            else:
+                # Unclosed block
+                blocks.append('\n'.join(block_lines))
+        else:
+            i += 1
+
+    return blocks
+
 def html_to_markdown(html_text: str, src_path: str, custom_title: Optional[str]) -> str:
     soup = BeautifulSoup(html_text, "lxml")
 
@@ -388,10 +469,25 @@ def html_to_markdown(html_text: str, src_path: str, custom_title: Optional[str])
     return clean_ws(doc) + "\n"
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
-    p = argparse.ArgumentParser(description="Convert ChatGPT HTML export to Markdown with frontmatter.")
+    p = argparse.ArgumentParser(
+        description="Convert ChatGPT HTML export to Markdown with frontmatter.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s conversation.html
+  %(prog)s conversation.html -o output.md
+  %(prog)s conversation.html --debug --validate
+        """
+    )
     p.add_argument("html", help="Path to ChatGPT HTML export (e.g., foundation.html)")
     p.add_argument("-o", "--output", help="Output .md path (default: same name with .md)")
     p.add_argument("--title", help="Override frontmatter title", default=None)
+    p.add_argument("-d", "--debug", action="store_true", help="Enable debug output")
+    p.add_argument("-v", "--validate", action="store_true", help="Validate generated markdown")
+    p.add_argument("--dry-run", action="store_true", help="Show what would be done without writing files")
+    p.add_argument("--show-mermaid", action="store_true", help="Show detected mermaid diagrams")
+    p.add_argument("--encoding", default="utf-8", help="Input file encoding (default: utf-8)")
+
     args = p.parse_args(argv)
 
     src_path = args.html
@@ -399,13 +495,62 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         print(f"ERROR: File not found: {src_path}", file=sys.stderr)
         return 2
 
-    html_text = read_file(src_path)
-    md = html_to_markdown(html_text, src_path, args.title)
+    try:
+        with open(src_path, "r", encoding=args.encoding, errors="ignore") as f:
+            html_text = f.read()
+    except Exception as e:
+        print(f"ERROR: Failed to read file {src_path}: {e}", file=sys.stderr)
+        return 1
+
+    if args.debug:
+        print(f"DEBUG: Read {len(html_text)} characters from {src_path}")
+
+    try:
+        md = html_to_markdown(html_text, src_path, args.title)
+    except Exception as e:
+        print(f"ERROR: Failed to convert HTML to markdown: {e}", file=sys.stderr)
+        if args.debug:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+    if args.debug:
+        print(f"DEBUG: Generated {len(md)} characters of markdown")
+
+    if args.validate:
+        issues = validate_markdown(md)
+        if issues:
+            print(f"WARNING: Found {len(issues)} validation issues:")
+            for issue in issues:
+                print(f"  - {issue}")
+        else:
+            print("INFO: Markdown validation passed")
+
+    if args.show_mermaid:
+        mermaid_blocks = find_mermaid_blocks(md)
+        if mermaid_blocks:
+            print(f"INFO: Found {len(mermaid_blocks)} mermaid diagram(s):")
+            for i, block in enumerate(mermaid_blocks, 1):
+                print(f"\n--- Mermaid Diagram {i} ---")
+                print(block)
+        else:
+            print("INFO: No mermaid diagrams found")
+
+    if args.dry_run:
+        print("DRY RUN - Would write the following markdown:")
+        print("=" * 50)
+        print(md[:500] + "..." if len(md) > 500 else md)
+        return 0
 
     out_path = args.output or re.sub(r"\.html?$", ".md", src_path, flags=re.I) or (os.path.basename(src_path) + ".md")
-    write_file(out_path, md)
-    print(f"Wrote: {out_path}")
-    return 0
+
+    try:
+        write_file(out_path, md)
+        print(f"SUCCESS: Wrote {len(md)} characters to: {out_path}")
+        return 0
+    except Exception as e:
+        print(f"ERROR: Failed to write file {out_path}: {e}", file=sys.stderr)
+        return 1
 
 if __name__ == "__main__":
     raise SystemExit(main())
