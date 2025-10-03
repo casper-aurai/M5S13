@@ -30,6 +30,12 @@ LANG_PATTERNS = (
     re.compile(r"highlight\-source\-([A-Za-z0-9\+\#\-\_]+)"),
 )
 
+MERMAID_PATTERNS = (
+    re.compile(r"mermaid"),
+    re.compile(r"diagram"),
+    re.compile(r"flowchart|gantt|sequenceDiagram|classDiagram|stateDiagram|journey|pie|requirement"),
+)
+
 # --- Utilities ----------------------------------------------------------------
 
 def read_file(path: str) -> str:
@@ -58,28 +64,53 @@ def guess_code_language(tag: Tag) -> Optional[str]:
     # Try classes first
     classes = tag.get("class", []) or []
     class_str = " ".join(classes)
+
+    # Check for mermaid patterns in class names
+    for pattern in MERMAID_PATTERNS:
+        if pattern.search(class_str):
+            return "mermaid"
+
     for rx in LANG_PATTERNS:
         m = rx.search(class_str)
         if m:
             return m.group(1).lower()
+
+    # Check for mermaid in the actual content
+    code_el = tag.find("code")
+    if code_el:
+        content = code_el.get_text()
+        for pattern in MERMAID_PATTERNS:
+            if pattern.search(content):
+                return "mermaid"
+
     # Try attributes commonly used for language hints
     for attr in ("data-language", "data-lang", "lang"):
         if tag.has_attr(attr) and str(tag[attr]).strip():
-            return str(tag[attr]).strip().lower()
+            lang = str(tag[attr]).strip().lower()
+            # Check if it's a mermaid variant
+            for pattern in MERMAID_PATTERNS:
+                if pattern.search(lang):
+                    return "mermaid"
+            return lang
+
     # Probe <code> child classes
-    code = tag.find("code")
-    if code:
-        classes = code.get("class", []) or []
+    if code_el:
+        classes = code_el.get("class", []) or []
         for rx in LANG_PATTERNS:
             m = rx.search(" ".join(classes))
             if m:
                 return m.group(1).lower()
         for attr in ("data-language", "data-lang", "lang"):
-            if code.has_attr(attr) and str(code[attr]).strip():
-                return str(code[attr]).strip().lower()
+            if code_el.has_attr(attr) and str(code_el[attr]).strip():
+                return str(code_el[attr]).strip().lower()
     return None
 
 def fence_code(code: str, lang: Optional[str]) -> str:
+    # Special handling for mermaid diagrams
+    if lang == "mermaid":
+        # Use backticks for mermaid diagrams as they're more widely supported
+        return f"```{lang}\n{code.rstrip()}\n```"
+
     # Ensure no trailing spaces and consistent newlines inside code.
     code = code.replace("\r\n", "\n").replace("\r", "\n")
     # Avoid triple-tilde conflicts: if code contains ~~~, lengthen the fence.
