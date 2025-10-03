@@ -58,6 +58,14 @@ def print_transform_summary() -> None:
 LANG_PATTERNS = (
     re.compile(r"(?:language|lang|code\-lang|syntax)\-([A-Za-z0-9\+\#\-\_]+)"),
     re.compile(r"highlight\-source\-([A-Za-z0-9\+\#\-\_]+)"),
+    # Additional patterns for better language detection
+    re.compile(r"python|py", re.IGNORECASE),
+    re.compile(r"bash|sh|shell", re.IGNORECASE),
+    re.compile(r"javascript|js", re.IGNORECASE),
+    re.compile(r"go|golang", re.IGNORECASE),
+    re.compile(r"yaml|yml", re.IGNORECASE),
+    re.compile(r"json", re.IGNORECASE),
+    re.compile(r"make|makefile", re.IGNORECASE),
 )
 
 MERMAID_PATTERNS = (
@@ -117,10 +125,26 @@ def guess_code_language(tag: Tag) -> Optional[str]:
     code_el = tag.find("code")
     if code_el:
         content = code_el.get_text()
+
+        # Check for mermaid patterns in content
         for pattern in MERMAID_PATTERNS:
             if pattern.search(content):
                 log_transform("MERMAID_DETECTED", f"content: {content[:50]}...")
                 return "mermaid"
+
+        # Language detection from content patterns
+        if re.search(r'\b(import|from|def|class|print|if __name__|raise SystemExit)\b', content):
+            return "python"
+        elif re.search(r'\b(import|package|func|var|const|fmt\.|log\.)\b', content):
+            return "go"
+        elif re.search(r'\b(function|const|let|var|console\.|document\.)\b', content):
+            return "javascript"
+        elif re.search(r'\b(echo|ls|cd|mkdir|grep|awk|sed)\b', content):
+            return "bash"
+        elif re.search(r'\b(version|dependencies|scripts|devDependencies)\b', content):
+            return "json"
+        elif re.search(r'\b(targets|variables|rules|MAKEFLAGS)\b', content):
+            return "make"
 
     # Try attributes commonly used for language hints
     for attr in ("data-language", "data-lang", "lang"):
@@ -171,26 +195,6 @@ def text_of(tag: Tag) -> str:
     # Avoid including script/style text; BeautifulSoup excludes them by default.
     return tag.get_text(separator="\n", strip=True)
 
-def extract_mermaid_content(tag: Tag) -> Optional[str]:
-    """Extract raw mermaid content from HTML tags, preserving exact syntax."""
-    # Look for mermaid in class names or content
-    classes = tag.get("class", []) or []
-    class_str = " ".join(classes).lower()
-
-    for pattern in MERMAID_PATTERNS:
-        if pattern.search(class_str):
-            # Extract raw text content
-            content = tag.get_text("\n")
-            return cleanup_mermaid_content(content.strip())
-
-    # Check if content contains mermaid patterns
-    content = tag.get_text("\n")
-    for pattern in MERMAID_PATTERNS:
-        if pattern.search(content):
-            return cleanup_mermaid_content(content.strip())
-
-    return None
-
 def cleanup_mermaid_content(content: str) -> str:
     """Clean up mermaid content to fix common parsing issues."""
     lines = content.split('\n')
@@ -220,6 +224,73 @@ def cleanup_mermaid_content(content: str) -> str:
 
         # Fix bracket issues
         line = re.sub(r'\[\s*\]', '[]', line)  # Remove spaces in empty brackets
+
+        cleaned_lines.append(line)
+
+    return '\n'.join(cleaned_lines)
+
+def extract_mermaid_content(tag: Tag) -> Optional[str]:
+    """Extract raw mermaid content from HTML tags, preserving exact syntax."""
+    # Look for mermaid in class names or content
+    classes = tag.get("class", []) or []
+    class_str = " ".join(classes).lower()
+
+    for pattern in MERMAID_PATTERNS:
+        if pattern.search(class_str):
+            # Extract raw text content
+            content = tag.get_text("\n")
+            return cleanup_mermaid_content(content.strip())
+
+    # Check if content contains mermaid patterns
+    content = tag.get_text("\n")
+    for pattern in MERMAID_PATTERNS:
+        if pattern.search(content):
+            return cleanup_mermaid_content(content.strip())
+
+    return None
+
+def extract_code_content(tag: Tag) -> Optional[str]:
+    """Extract and clean code content from HTML tags."""
+    code_el = tag.find("code")
+    if code_el:
+        content = code_el.get_text("\n")
+    else:
+        content = tag.get_text("\n")
+
+    # Clean up the content
+    lines = content.split('\n')
+    cleaned_lines = []
+
+    for line in lines:
+        # Preserve indentation but clean up excessive whitespace
+        cleaned_line = line.rstrip()
+        if cleaned_line:  # Only add non-empty lines
+            cleaned_lines.append(cleaned_line)
+
+    return '\n'.join(cleaned_lines) if cleaned_lines else None
+
+def cleanup_code_content(content: str, lang: Optional[str] = None) -> str:
+    """Clean up code content based on language-specific rules."""
+    if not content:
+        return content
+
+    lines = content.split('\n')
+    cleaned_lines = []
+
+    for i, line in enumerate(lines):
+        original_line = line
+
+        # Clean up excessive whitespace
+        line = re.sub(r'[ \t]+', ' ', line)  # Collapse multiple spaces/tabs to single space
+
+        # Language-specific cleanup
+        if lang == "python":
+            # Fix common Python formatting issues
+            line = re.sub(r'^\s*print\s*\(\s*', 'print(', line)  # Clean up print statements
+            line = re.sub(r'\s*\)\s*$', ')', line)  # Clean up closing parens
+        elif lang in ("bash", "sh", "shell"):
+            # Clean up shell commands
+            line = re.sub(r'^\s*\$?\s*', '', line)  # Remove leading $ or spaces
 
         cleaned_lines.append(line)
 
@@ -310,18 +381,25 @@ def convert_block(node: Tag) -> Optional[str]:
             log_transform("MERMAID_BLOCK", f"length: {len(mermaid_content)}")
             return fence_code(mermaid_content, "mermaid")
 
-        code_el = node.find("code")
-        raw = code_el.get_text("\n") if code_el else node.get_text("\n")
-        log_transform("CODE_BLOCK", f"lang: {lang or 'unknown'}")
-        return fence_code(raw, lang)
+        # Extract and clean code content
+        code_content = extract_code_content(node)
+        if code_content:
+            cleaned_content = cleanup_code_content(code_content, lang)
+            log_transform("CODE_BLOCK", f"lang: {lang or 'unknown'}")
+            return fence_code(cleaned_content, lang)
+        else:
+            return None
+
     if name == "code":
         # Only treat as block if it has multiple lines and parent is not <pre>
         if node.parent and node.parent.name.lower() == "pre":
             return None
         raw = node.get_text("\n")
         if "\n" in raw:
-            log_transform("CODE_BLOCK", f"lang: {guess_code_language(node) or 'unknown'}")
-            return fence_code(raw, guess_code_language(node))
+            lang = guess_code_language(node)
+            cleaned_content = cleanup_code_content(raw, lang)
+            log_transform("CODE_BLOCK", f"lang: {lang or 'unknown'}")
+            return fence_code(cleaned_content, lang)
         # otherwise inline; will be handled by convert_inline within <p>
         return None
     if name in {"ul", "ol"}:
