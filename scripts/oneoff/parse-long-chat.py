@@ -148,7 +148,8 @@ def guess_code_language(tag: Tag) -> Optional[str]:
 def fence_code(code: str, lang: Optional[str]) -> str:
     # Special handling for mermaid diagrams - use backticks for better compatibility
     if lang == "mermaid":
-        # Use backticks for mermaid diagrams as they're more widely supported
+        # For mermaid, don't add the language name inside the code block
+        # as it's already specified in the fence
         return f"```mermaid\n{code.rstrip()}\n```"
 
     # For other languages, ensure no trailing spaces and consistent newlines inside code.
@@ -198,6 +199,14 @@ def cleanup_mermaid_content(content: str) -> str:
     for line in lines:
         original_line = line
         line = line.strip()
+
+        # Skip "mermaid" language declaration if present
+        if line.lower() == 'mermaid':
+            continue
+
+        # Skip "Copy code" artifacts
+        if line.lower() == 'copy code':
+            continue
 
         # Fix common issues that cause parsing errors
         # Remove problematic characters at the end of lines
