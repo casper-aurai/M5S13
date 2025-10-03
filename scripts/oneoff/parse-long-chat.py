@@ -21,9 +21,39 @@ import html
 import os
 import re
 import sys
+import logging
+from collections import defaultdict
 from typing import Iterable, List, Optional, Tuple
 
 from bs4 import BeautifulSoup, NavigableString, Tag
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s: %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# Track transformations for summary
+transform_stats = defaultdict(int)
+
+def log_transform(element_type: str, details: str = "") -> None:
+    """Log transformation with stats tracking."""
+    transform_stats[element_type] += 1
+    if details:
+        logger.info(f"{element_type}: {details}")
+    else:
+        logger.info(element_type)
+
+def print_transform_summary() -> None:
+    """Print summary of all transformations made."""
+    if transform_stats:
+        logger.info("Transformation Summary:")
+        for transform, count in sorted(transform_stats.items()):
+            logger.info(f"  {transform}: {count}")
+    else:
+        logger.info("No transformations tracked")
 
 LANG_PATTERNS = (
     re.compile(r"(?:language|lang|code\-lang|syntax)\-([A-Za-z0-9\+\#\-\_]+)"),
@@ -34,8 +64,10 @@ MERMAID_PATTERNS = (
     re.compile(r"mermaid", re.IGNORECASE),
     re.compile(r"diagram", re.IGNORECASE),
     re.compile(r"flowchart|gantt|sequenceDiagram|classDiagram|stateDiagram|journey|pie|requirement|gitgraph|timeline", re.IGNORECASE),
-    re.compile(r"graph\s+(?:TD|TB|BT|RL|LR)", re.IGNORECASE),
     re.compile(r"flowchart\s+(?:TD|TB|BT|RL|LR)", re.IGNORECASE),
+    # Additional patterns for edge cases
+    re.compile(r"subgraph|direction|classDef", re.IGNORECASE),
+    re.compile(r"-->|-\.-|\.->|---", re.IGNORECASE),  # Common mermaid arrows
 )
 
 # --- Utilities ----------------------------------------------------------------
@@ -70,6 +102,7 @@ def guess_code_language(tag: Tag) -> Optional[str]:
     # Check for mermaid patterns in class names
     for pattern in MERMAID_PATTERNS:
         if pattern.search(class_str):
+            log_transform("MERMAID_DETECTED", f"class: {class_str}")
             return "mermaid"
 
     for rx in LANG_PATTERNS:
@@ -83,6 +116,7 @@ def guess_code_language(tag: Tag) -> Optional[str]:
         content = code_el.get_text()
         for pattern in MERMAID_PATTERNS:
             if pattern.search(content):
+                log_transform("MERMAID_DETECTED", f"content: {content[:50]}...")
                 return "mermaid"
 
     # Try attributes commonly used for language hints
@@ -92,6 +126,7 @@ def guess_code_language(tag: Tag) -> Optional[str]:
             # Check if it's a mermaid variant
             for pattern in MERMAID_PATTERNS:
                 if pattern.search(lang):
+                    log_transform("MERMAID_DETECTED", f"attribute: {lang}")
                     return "mermaid"
             return lang
 
@@ -142,15 +177,41 @@ def extract_mermaid_content(tag: Tag) -> Optional[str]:
         if pattern.search(class_str):
             # Extract raw text content
             content = tag.get_text("\n")
-            return content.strip()
+            return cleanup_mermaid_content(content.strip())
 
     # Check if content contains mermaid patterns
     content = tag.get_text("\n")
     for pattern in MERMAID_PATTERNS:
         if pattern.search(content):
-            return content.strip()
+            return cleanup_mermaid_content(content.strip())
 
     return None
+
+def cleanup_mermaid_content(content: str) -> str:
+    """Clean up mermaid content to fix common parsing issues."""
+    lines = content.split('\n')
+    cleaned_lines = []
+
+    for line in lines:
+        original_line = line
+        line = line.strip()
+
+        # Fix common issues that cause parsing errors
+        # Remove problematic characters at the end of lines
+        line = re.sub(r'[^\x20-\x7E\n]+$', '', line)  # Remove non-ASCII chars at end
+
+        # Fix malformed arrows and connections
+        line = re.sub(r'-\.-+', '--', line)  # Fix dotted arrows
+        line = re.sub(r'-\.+>', '->', line)  # Fix dotted arrows
+        line = re.sub(r'--+>', '->', line)   # Fix multiple dashes
+        line = re.sub(r'<-+', '<-', line)    # Fix multiple dashes
+
+        # Fix bracket issues
+        line = re.sub(r'\[\s*\]', '[]', line)  # Remove spaces in empty brackets
+
+        cleaned_lines.append(line)
+
+    return '\n'.join(cleaned_lines)
 
 # --- Block conversion ----------------------------------------------------------
 
@@ -210,6 +271,11 @@ def convert_block(node: Tag) -> Optional[str]:
     name = node.name.lower()
     if name in {"script", "style"}:
         return None
+
+    # Log major element conversions
+    if name in {"h1","h2","h3","h4","h5","h6","p","blockquote","pre","code","ul","ol","table"}:
+        log_transform(f"HTML_{name.upper()}")
+
     if name in {"h1","h2","h3","h4","h5","h6"}:
         level = int(name[1])
         hashes = "#" * level
@@ -229,10 +295,12 @@ def convert_block(node: Tag) -> Optional[str]:
         # Special handling for mermaid diagrams
         mermaid_content = extract_mermaid_content(node)
         if mermaid_content and (lang == "mermaid" or not lang):
+            log_transform("MERMAID_BLOCK", f"length: {len(mermaid_content)}")
             return fence_code(mermaid_content, "mermaid")
 
         code_el = node.find("code")
         raw = code_el.get_text("\n") if code_el else node.get_text("\n")
+        log_transform("CODE_BLOCK", f"lang: {lang or 'unknown'}")
         return fence_code(raw, lang)
     if name == "code":
         # Only treat as block if it has multiple lines and parent is not <pre>
@@ -240,6 +308,7 @@ def convert_block(node: Tag) -> Optional[str]:
             return None
         raw = node.get_text("\n")
         if "\n" in raw:
+            log_transform("CODE_BLOCK", f"lang: {guess_code_language(node) or 'unknown'}")
             return fence_code(raw, guess_code_language(node))
         # otherwise inline; will be handled by convert_inline within <p>
         return None
@@ -340,6 +409,7 @@ def extract_messages(root: Tag) -> List[Tuple[str, str]]:
         md = convert_block(c) or ""
         md = clean_ws(md)
         if md:
+            log_transform("MESSAGE_EXTRACTED", f"label: {lbl}")
             out.append((lbl, md))
     return out
 
@@ -440,15 +510,25 @@ def find_mermaid_blocks(md: str) -> List[str]:
     return blocks
 
 def html_to_markdown(html_text: str, src_path: str, custom_title: Optional[str]) -> str:
+    logger.info("Starting HTML to Markdown conversion")
     soup = BeautifulSoup(html_text, "lxml")
 
     frontmatter = build_frontmatter(custom_title or "", src_path, soup)
+    log_transform("FRONTMATTER_GENERATED")
 
     roots = find_message_roots(soup)
+    logger.info(f"Found {len(roots)} message root(s)")
+
     # Collect messages from each root, preserving document order
     collected: List[Tuple[str,str]] = []
-    for r in roots:
-        collected.extend(extract_messages(r))
+    for i, r in enumerate(roots):
+        logger.info(f"Processing message root {i+1}/{len(roots)}")
+        messages = extract_messages(r)
+        collected.extend(messages)
+        if messages:
+            logger.info(f"Extracted {len(messages)} message(s) from root {i+1}")
+
+    logger.info(f"Total collected {len(collected)} message(s)")
 
     # Post-process: prune empty/dup blocks and add labels as headings
     normalized: List[str] = []
@@ -463,10 +543,14 @@ def html_to_markdown(html_text: str, src_path: str, custom_title: Optional[str])
 
     if not body:
         # Fallback: convert body wholesale
+        logger.warning("No message content found, using fallback conversion")
         body = convert_block(soup.body or soup) or ""
 
     doc = frontmatter + ("\n\n" + body if body else "\n")
-    return clean_ws(doc) + "\n"
+    final_doc = clean_ws(doc) + "\n"
+
+    logger.info(f"Conversion complete: {len(final_doc)} characters generated")
+    return final_doc
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     p = argparse.ArgumentParser(
@@ -535,6 +619,9 @@ Examples:
                 print(block)
         else:
             print("INFO: No mermaid diagrams found")
+
+    # Print transformation summary
+    print_transform_summary()
 
     if args.dry_run:
         print("DRY RUN - Would write the following markdown:")
