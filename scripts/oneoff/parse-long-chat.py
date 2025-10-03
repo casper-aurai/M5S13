@@ -1,13 +1,380 @@
-import re
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+chat_html_to_md.py
+Convert a ChatGPT HTML conversation dump to Markdown with YAML frontmatter.
+- Preserves message order
+- Extracts code blocks with language detection and ~~~ fences (not backticks)
+- Converts headings, paragraphs, lists, blockquotes
+- Keeps inline code; escapes backticks inside inline code spans
+- Collects canonical URL, title, and timestamps into frontmatter
 
-def parse_long_chat(html):
-    """Parses the html file in docs and processes it to markdown"""
-    # remove all html tags
-    text = re.sub('<[^<]+?>', '', html)
-    # replace all occurrences of multiple whitespace with a single space
-    text = re.sub('\s+', ' ', text)
-    # replace all occurrences of newline with two newlines
-    text = text.replace('\n', '\n\n')
-    # replace all occurrences of double newlines with triple newlines
-    text = text.replace('\n\n\n', '\n\n\n\n')
-    return text
+Dependencies: beautifulsoup4, lxml
+    pip install beautifulsoup4 lxml
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import html
+import os
+import re
+import sys
+from typing import Iterable, List, Optional, Tuple
+
+from bs4 import BeautifulSoup, NavigableString, Tag
+
+LANG_PATTERNS = (
+    re.compile(r"(?:language|lang|code\-lang|syntax)\-([A-Za-z0-9\+\#\-\_]+)"),
+    re.compile(r"highlight\-source\-([A-Za-z0-9\+\#\-\_]+)"),
+)
+
+# --- Utilities ----------------------------------------------------------------
+
+def read_file(path: str) -> str:
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+def write_file(path: str, text: str) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+def iso(dtobj: dt.datetime) -> str:
+    return dtobj.replace(microsecond=0).isoformat()
+
+def clean_ws(text: str) -> str:
+    # Normalize line endings and collapse excessive blank lines.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+def unescape_html(text: str) -> str:
+    return html.unescape(text)
+
+def guess_code_language(tag: Tag) -> Optional[str]:
+    # Try classes first
+    classes = tag.get("class", []) or []
+    class_str = " ".join(classes)
+    for rx in LANG_PATTERNS:
+        m = rx.search(class_str)
+        if m:
+            return m.group(1).lower()
+    # Try attributes commonly used for language hints
+    for attr in ("data-language", "data-lang", "lang"):
+        if tag.has_attr(attr) and str(tag[attr]).strip():
+            return str(tag[attr]).strip().lower()
+    # Probe <code> child classes
+    code = tag.find("code")
+    if code:
+        classes = code.get("class", []) or []
+        for rx in LANG_PATTERNS:
+            m = rx.search(" ".join(classes))
+            if m:
+                return m.group(1).lower()
+        for attr in ("data-language", "data-lang", "lang"):
+            if code.has_attr(attr) and str(code[attr]).strip():
+                return str(code[attr]).strip().lower()
+    return None
+
+def fence_code(code: str, lang: Optional[str]) -> str:
+    # Ensure no trailing spaces and consistent newlines inside code.
+    code = code.replace("\r\n", "\n").replace("\r", "\n")
+    # Avoid triple-tilde conflicts: if code contains ~~~, lengthen the fence.
+    fence = "~~~"
+    if "~~~" in code:
+        fence = "~~~~"
+    lang_suffix = (lang or "").strip()
+    header = f"{fence}{lang_suffix and ' ' + lang_suffix}"
+    return f"{header}\n{code.rstrip()}\n{fence}"
+
+def escape_backticks_inline(text: str) -> str:
+    # Inside inline code markers we escape backticks. We’ll apply when converting <code> inline.
+    return text.replace("`", r"\`")
+
+def text_of(tag: Tag) -> str:
+    # Get visible text with single newlines between block children.
+    # Avoid including script/style text; BeautifulSoup excludes them by default.
+    return tag.get_text(separator="\n", strip=True)
+
+# --- Block conversion ----------------------------------------------------------
+
+def convert_inline(node: Tag | NavigableString) -> str:
+    if isinstance(node, NavigableString):
+        return str(node)
+    if isinstance(node, Tag):
+        name = node.name.lower()
+        if name in {"strong", "b"}:
+            return f"**{''.join(convert_inline(c) for c in node.children)}**"
+        if name in {"em", "i"}:
+            return f"*{''.join(convert_inline(c) for c in node.children)}*"
+        if name == "code":
+            content = ''.join(convert_inline(c) for c in node.children)
+            return f"`{escape_backticks_inline(content)}`"
+        if name == "a":
+            href = node.get("href") or ""
+            label = ''.join(convert_inline(c) for c in node.children) or href
+            return f"[{label}]({href})" if href else label
+        if name in {"span", "u", "mark"}:
+            return ''.join(convert_inline(c) for c in node.children)
+        if name in {"br"}:
+            return "  \n"
+        # Default: recurse into children
+        return ''.join(convert_inline(c) for c in node.children)
+    return ""
+
+def convert_list(ul_or_ol: Tag, ordered: bool) -> str:
+    out: List[str] = []
+    idx = 1
+    for li in ul_or_ol.find_all("li", recursive=False):
+        # Convert LI content (block and inline)
+        para_chunks: List[str] = []
+        # If LI has block children, handle; else treat as inline
+        block_children = [c for c in li.children if isinstance(c, Tag) and c.name.lower() in ("p", "ul", "ol")]
+        if not block_children:
+            # Simple inline LI
+            line = convert_inline(li)
+            prefix = f"{idx}." if ordered else "-"
+            out.append(f"{prefix} {line.strip()}")
+        else:
+            # First paragraph
+            first = li.find("p", recursive=False)
+            head = convert_inline(first) if first else convert_inline(li)
+            prefix = f"{idx}." if ordered else "-"
+            out.append(f"{prefix} {head.strip()}")
+            # Nested lists
+            for nested in li.find_all(["ul", "ol"], recursive=False):
+                nested_str = convert_list(nested, ordered=(nested.name.lower() == "ol"))
+                # Indent nested by two spaces
+                nested_str = "\n".join(("  " + ln) if ln.strip() else ln for ln in nested_str.splitlines())
+                out.append(nested_str)
+        idx += 1
+    return "\n".join(out)
+
+def convert_block(node: Tag) -> Optional[str]:
+    name = node.name.lower()
+    if name in {"script", "style"}:
+        return None
+    if name in {"h1","h2","h3","h4","h5","h6"}:
+        level = int(name[1])
+        hashes = "#" * level
+        return f"{hashes} {text_of(node)}"
+    if name in {"p"}:
+        return convert_inline(node).strip()
+    if name in {"blockquote"}:
+        inner = "\n".join(filter(None, ((convert_block(c) or "") for c in node.children if isinstance(c, Tag))))
+        if not inner:
+            inner = convert_inline(node)
+        quoted = "\n".join([f"> {ln}" if ln.strip() else ">" for ln in inner.splitlines()])
+        return quoted
+    if name == "pre":
+        # Block code
+        lang = guess_code_language(node)
+        code_el = node.find("code")
+        raw = code_el.get_text("\n") if code_el else node.get_text("\n")
+        return fence_code(raw, lang)
+    if name == "code":
+        # Only treat as block if it has multiple lines and parent is not <pre>
+        if node.parent and node.parent.name.lower() == "pre":
+            return None
+        raw = node.get_text("\n")
+        if "\n" in raw:
+            return fence_code(raw, guess_code_language(node))
+        # otherwise inline; will be handled by convert_inline within <p>
+        return None
+    if name in {"ul", "ol"}:
+        return convert_list(node, ordered=(name == "ol"))
+    if name in {"hr"}:
+        return "---"
+    if name in {"table"}:
+        # Basic table to markdown (pipe table). Keep simple, no alignment calc.
+        rows = node.find_all("tr")
+        if not rows:
+            return None
+        def row_text(tr: Tag) -> List[str]:
+            cells = tr.find_all(["th","td"])
+            return [convert_inline(td).strip().replace("\n", " ") for td in cells]
+        md_rows = [row_text(r) for r in rows]
+        if md_rows:
+            header = md_rows[0]
+            sep = ["---"] * len(header)
+            lines = ["| " + " | ".join(header) + " |", "| " + " | ".join(sep) + " |"]
+            for r in md_rows[1:]:
+                lines.append("| " + " | ".join(r) + " |")
+            return "\n".join(lines)
+    # Generic container: descend and collect children blocks
+    if name in {"div","section","article"}:
+        parts = []
+        for child in node.children:
+            if isinstance(child, Tag):
+                blk = convert_block(child)
+                if blk:
+                    parts.append(blk)
+        if parts:
+            return "\n\n".join([p for p in parts if p.strip()])
+        return None
+    # Fallback: plain text
+    txt = node.get_text("\n", strip=True)
+    return txt if txt else None
+
+# --- Conversation extraction ---------------------------------------------------
+
+def find_message_roots(soup: BeautifulSoup) -> List[Tag]:
+    """
+    Attempt to find message containers in a ChatGPT export.
+    Preference order:
+    1) Nodes with data-message-author-role + data-message-id
+    2) Article/section nodes with role="article" or [data-testid*='conversation']
+    3) Fallback to main content container
+    """
+    nodes = soup.select("[data-message-author-role][data-message-id]")
+    if nodes:
+        return nodes
+    nodes = soup.select("article[role='article'], section[role='article'], [data-testid*='conversation']")
+    if nodes:
+        return nodes
+    main = soup.find(id="main") or soup.find("main")
+    return [main] if main else [soup.body or soup]
+
+def label_of(msg: Tag) -> str:
+    # Try to label by author role if present
+    role = msg.get("data-message-author-role") or ""
+    if role:
+        return role.strip()
+    # Sometimes the class names include 'user' or 'assistant'
+    classes = " ".join(msg.get("class", [])).lower()
+    if "assistant" in classes:
+        return "assistant"
+    if "user" in classes:
+        return "user"
+    return "message"
+
+def extract_messages(root: Tag) -> List[Tuple[str, str]]:
+    """
+    Convert each message root into Markdown chunk.
+    Returns list of (label, markdown_block).
+    """
+    out: List[Tuple[str, str]] = []
+    # If root looks like a single message container, convert directly
+    # Otherwise, dive into likely message children
+    candidates = []
+    if root.has_attr("data-message-id"):
+        candidates = [root]
+    else:
+        candidates = root.select("[data-message-author-role][data-message-id]") or root.find_all(["article","section","div"], recursive=True)
+
+    if not candidates:
+        candidates = [root]
+
+    seen_ids = set()
+    for c in candidates:
+        # Deduplicate via data-message-id if present
+        mid = c.get("data-message-id")
+        if mid:
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+
+        lbl = label_of(c)
+        md = convert_block(c) or ""
+        md = clean_ws(md)
+        if md:
+            out.append((lbl, md))
+    return out
+
+# --- Frontmatter ---------------------------------------------------------------
+
+def build_frontmatter(title: str, src_path: str, soup: BeautifulSoup) -> str:
+    # Attempt to get canonical URL
+    canonical = soup.find("link", rel="canonical")
+    src_url = canonical.get("href") if canonical and canonical.has_attr("href") else ""
+
+    og_title = soup.find("meta", property="og:title")
+    meta_title = og_title.get("content").strip() if og_title and og_title.has_attr("content") else ""
+
+    page_title = (title or meta_title or (soup.title.string.strip() if soup.title and soup.title.string else "")) or os.path.basename(src_path)
+
+    now = dt.datetime.now()
+    try:
+        mtime = dt.datetime.fromtimestamp(os.path.getmtime(src_path))
+    except Exception:
+        mtime = now
+
+    fm = {
+        "title": page_title,
+        "source_file": os.path.basename(src_path),
+        "source_url": src_url,
+        "exported_at": iso(now),
+        "file_mtime": iso(mtime),
+        "generator": "chat-html2md/0.1",
+        "tags": ["chatgpt", "conversation", "import"],
+    }
+
+    # Render YAML manually (no PyYAML dependency)
+    lines = ["---"]
+    for k, v in fm.items():
+        if isinstance(v, list):
+            items = ", ".join([str(x) for x in v])
+            lines.append(f"{k}: [{items}]")
+        else:
+            # Escape quotes minimally
+            sv = str(v).replace('"', '\\"')
+            lines.append(f'{k}: "{sv}"')
+    lines.append("---")
+    return "\n".join(lines)
+
+# --- Main ---------------------------------------------------------------------
+
+def html_to_markdown(html_text: str, src_path: str, custom_title: Optional[str]) -> str:
+    soup = BeautifulSoup(html_text, "lxml")
+
+    frontmatter = build_frontmatter(custom_title or "", src_path, soup)
+
+    roots = find_message_roots(soup)
+    # Collect messages from each root, preserving document order
+    collected: List[Tuple[str,str]] = []
+    for r in roots:
+        collected.extend(extract_messages(r))
+
+    # Post-process: prune empty/dup blocks and add labels as headings
+    normalized: List[str] = []
+    for lbl, md in collected:
+        if not md:
+            continue
+        # Heuristic: if md looks like the entire page dump (overly large), skip; else keep
+        normalized.append(f"### {lbl.capitalize()}\n\n{md}")
+
+    body = "\n\n".join(dict.fromkeys(normalized))  # de-dup exact repeats while preserving order
+    body = clean_ws(body)
+
+    if not body:
+        # Fallback: convert body wholesale
+        body = convert_block(soup.body or soup) or ""
+
+    doc = frontmatter + ("\n\n" + body if body else "\n")
+    return clean_ws(doc) + "\n"
+
+def main(argv: Optional[Iterable[str]] = None) -> int:
+    p = argparse.ArgumentParser(description="Convert ChatGPT HTML export to Markdown with frontmatter.")
+    p.add_argument("html", help="Path to ChatGPT HTML export (e.g., foundation.html)")
+    p.add_argument("-o", "--output", help="Output .md path (default: same name with .md)")
+    p.add_argument("--title", help="Override frontmatter title", default=None)
+    args = p.parse_args(argv)
+
+    src_path = args.html
+    if not os.path.exists(src_path):
+        print(f"ERROR: File not found: {src_path}", file=sys.stderr)
+        return 2
+
+    html_text = read_file(src_path)
+    md = html_to_markdown(html_text, src_path, args.title)
+
+    out_path = args.output or re.sub(r"\.html?$", ".md", src_path, flags=re.I) or (os.path.basename(src_path) + ".md")
+    write_file(out_path, md)
+    print(f"Wrote: {out_path}")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

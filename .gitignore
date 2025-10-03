@@ -185,3 +185,6 @@ yarn-error.log*
 
 # DynamoDB Local files
 .dynamodb/
+
+# OS-specific files
+.DS_Store
