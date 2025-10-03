@@ -250,27 +250,39 @@ def extract_mermaid_content(tag: Tag) -> Optional[str]:
     return None
 
 def extract_code_content(tag: Tag) -> Optional[str]:
-    """Extract and clean code content from HTML tags."""
+    """Extract and clean code content from HTML tags, handling complex nested structures."""
+    # For complex HTML structures in <pre> blocks, extract from the code element directly
     code_el = tag.find("code")
     if code_el:
-        content = code_el.get_text("\n")
+        # Use get_text() without separator to avoid HTML entity issues
+        content = code_el.get_text()
     else:
-        content = tag.get_text("\n")
+        # Fallback: try to find any code-like content in descendants
+        for descendant in tag.descendants:
+            if descendant.name == "code":
+                content = descendant.get_text()
+                break
+        else:
+            # Last resort: use get_text with separator but clean it up
+            content = tag.get_text("\n")
 
-    # Clean up the content
+    if not content:
+        return None
+
+    # Clean up the content while preserving indentation structure
     lines = content.split('\n')
     cleaned_lines = []
 
     for line in lines:
-        # Preserve indentation but clean up excessive whitespace
+        # Strip trailing whitespace but preserve leading indentation
         cleaned_line = line.rstrip()
-        if cleaned_line:  # Only add non-empty lines
+        if cleaned_line:  # Only add non-empty lines for now
             cleaned_lines.append(cleaned_line)
 
     return '\n'.join(cleaned_lines) if cleaned_lines else None
 
 def cleanup_code_content(content: str, lang: Optional[str] = None) -> str:
-    """Clean up code content based on language-specific rules."""
+    """Clean up code content based on language-specific rules while preserving structure."""
     if not content:
         return content
 
@@ -280,16 +292,15 @@ def cleanup_code_content(content: str, lang: Optional[str] = None) -> str:
     for i, line in enumerate(lines):
         original_line = line
 
-        # Clean up excessive whitespace
-        line = re.sub(r'[ \t]+', ' ', line)  # Collapse multiple spaces/tabs to single space
-
-        # Language-specific cleanup
+        # For Python, preserve indentation structure but clean up excessive whitespace
         if lang == "python":
-            # Fix common Python formatting issues
-            line = re.sub(r'^\s*print\s*\(\s*', 'print(', line)  # Clean up print statements
-            line = re.sub(r'\s*\)\s*$', ')', line)  # Clean up closing parens
+            # Only normalize excessive whitespace, don't collapse important indentation
+            # Python indentation is semantic, so preserve it
+            line = re.sub(r'[ \t]+', ' ', line)  # Only collapse multiple spaces to single space
+            # Don't modify leading whitespace as it's semantically important in Python
+
         elif lang in ("bash", "sh", "shell"):
-            # Clean up shell commands
+            # Clean up shell commands but preserve structure
             line = re.sub(r'^\s*\$?\s*', '', line)  # Remove leading $ or spaces
 
         cleaned_lines.append(line)
