@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#/usr/bin/env python3
 """
 Analyzer Service Stub
 
@@ -8,6 +8,7 @@ Provides a basic HTTP server for the analyzer service with:
 - Placeholder endpoints for service-specific functionality
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -183,8 +184,11 @@ class AnalyzerService:
 
     async def health(self, request):
         """Health check endpoint."""
-        # Bootstrap Weaviate schema if needed
-        await self._ensure_weaviate_schema()
+        # Bootstrap Weaviate schema if needed (with error handling)
+        try:
+            await self._ensure_weaviate_schema()
+        except Exception as e:
+            logger.warning(f"Schema bootstrap failed: {e}")
         
         return web.json_response({
             "status": "healthy",
@@ -292,9 +296,14 @@ class AnalyzerService:
 
         class_name = payload.get('class', self.weaviate_class)
         object_id = payload.get('id') or str(uuid4())
+        # Generate a dummy vector for PoC (384 dimensions of random values)
+        import random
+        dummy_vector = [random.random() for _ in range(384)]
+        
         data_object = {
             self.weaviate_text_property: text,
             self.weaviate_metadata_property: json.dumps(metadata) if metadata else None,
+            'vector': dummy_vector,
             'created_at': datetime.utcnow().isoformat()
         }
 
@@ -306,7 +315,8 @@ class AnalyzerService:
                 self.weaviate_client.data_object.create,
                 data_object,
                 class_name=class_name,
-                uuid=object_id
+                uuid=object_id,
+                vector=dummy_vector
             )
         except Exception as exc:  # pragma: no cover - depends on weaviate availability
             logger.error(f"Failed to store object in Weaviate: {exc}")
@@ -346,10 +356,14 @@ class AnalyzerService:
         class_name = request.query.get('class', self.weaviate_class)
 
         def _execute_search():
+            # Generate a simple vector for the query (same method as for documents)
+            import random
+            query_vector = [random.random() for _ in range(384)]
+            
             return (
                 self.weaviate_client.query
                 .get(class_name, [self.weaviate_text_property, self.weaviate_metadata_property, 'created_at'])
-                .with_near_text({"concepts": [query_text]})
+                .with_near_vector({"vector": query_vector})
                 .with_limit(limit)
                 .do()
             )
@@ -367,6 +381,59 @@ class AnalyzerService:
         return web.json_response(
             {"status": "success", "results": hits, "total": len(hits)}
         )
+
+    async def _ensure_weaviate_schema(self):
+        """Ensure Weaviate DocChunk schema exists."""
+        try:
+            # Check if DocChunk class exists
+            if not self.weaviate_client.schema.exists(self.weaviate_class):
+                logger.info(f"Creating Weaviate schema: {self.weaviate_class}")
+                
+                schema = {
+                    "class": self.weaviate_class,
+                    "description": "Document chunk with embeddings for semantic search",
+                    "properties": [
+                        {
+                            "name": self.weaviate_text_property,
+                            "dataType": ["text"],
+                            "description": "The text content of the document chunk"
+                        },
+                        {
+                            "name": "vector",
+                            "dataType": ["number[]"],
+                            "description": "Manual vector embeddings for the chunk"
+                        },
+                        {
+                            "name": "repo",
+                            "dataType": ["text"],
+                            "description": "Repository reference"
+                        },
+                        {
+                            "name": "file",
+                            "dataType": ["text"],
+                            "description": "File path"
+                        },
+                        {
+                            "name": "chunkId",
+                            "dataType": ["text"],
+                            "description": "Unique chunk identifier"
+                        }
+                    ],
+                    "vectorIndexType": "hnsw",
+                    "vectorIndexConfig": {
+                        "efConstruction": 128,
+                        "maxConnections": 64,
+                        "ef": -1
+                    }
+                }
+                
+                self.weaviate_client.schema.create_class(schema)
+                logger.info(f"Created Weaviate schema: {self.weaviate_class}")
+            else:
+                logger.info(f"Weaviate schema already exists: {self.weaviate_class}")
+                
+        except Exception as e:
+            logger.error(f"Failed to ensure Weaviate schema: {e}")
 
     async def _is_weaviate_ready(self) -> bool:
         """Check if the Weaviate client is reachable without blocking the event loop."""
