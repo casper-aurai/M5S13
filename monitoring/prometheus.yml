@@ -1,71 +1,14 @@
 global:
   scrape_interval: 15s
-  evaluation_interval: 15s
-
-rule_files:
-  # - "first_rules.yml"
-  # - "second_rules.yml"
 
 scrape_configs:
-  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['localhost:9090']
-
-  # Kafka metrics
-  - job_name: 'kafka'
-    static_configs:
-      - targets: ['kafka:9308']
-    scrape_interval: 30s
-
-  # Service health checks (generic)
-  - job_name: 'services-health'
-    metrics_path: '/health'
+  - job_name: services
+    metrics_path: /metrics
     static_configs:
       - targets:
-          - 'kafka:9092'
-          - 'dgraph-alpha:8080'
-          - 'weaviate:8080'
-          - 'minio:9000'
-          - 'loki:3100'
-          - 'grafana:3000'
-          - 'postgres:5432'
-          - 'redis:6379'
-          - 'airflow-webserver:8080'
-    scrape_interval: 60s
-    params:
-      format: ['prometheus']
-
-  # FreshPOC application services
-  - job_name: 'freshpoc-services'
-    static_configs:
-      - targets:
-          - 'ingestion:8080'
-          - 'miner:8080'
-          - 'analyzer:8080'
-          - 'embedder:8080'
-          - 'writer:8080'
-          - 'query-api:8080'
-          - 'reporting:8080'
-    scrape_interval: 30s
-    metrics_path: '/metrics'
-
-  # Container metrics via cAdvisor (if running)
-  # - job_name: 'cadvisor'
-  #   static_configs:
-  #     - targets: ['cadvisor:8080']
-
-  # Airflow metrics (if available)
-  - job_name: 'airflow'
-    static_configs:
-      - targets: ['airflow-webserver:8080']
-    scrape_interval: 60s
-    metrics_path: '/admin/metrics'
-
-  # Database metrics
-  - job_name: 'databases'
-    static_configs:
-      - targets:
-          - 'postgres:5432'  # PostgreSQL exporter would need to be added
-          - 'redis:6379'     # Redis exporter would need to be added
-    scrape_interval: 60s
+          - ingestion:8011
+          - miner:8012
+          - analyzer:8013
+          - writer:8014
+          - query-api:8015
+          - reporting:8016

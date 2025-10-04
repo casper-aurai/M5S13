@@ -1,103 +1,59 @@
-#!/usr/bin/env python3
-"""
-Writer Service Stub
+from fastapi import FastAPI
+import uvicorn, os
+import mgclient
 
-Provides a basic HTTP server for the writer service with:
-- /health endpoint for health checks
-- /metrics endpoint for Prometheus metrics
-- Placeholder endpoints for service-specific functionality
-"""
+app = FastAPI()
 
-import asyncio
-import json
-import logging
-import os
-import time
-from datetime import datetime
-from typing import Dict, Any
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
-try:
-    from aiohttp import web
-except ImportError:
-    print("aiohttp not installed. Install with: pip install aiohttp")
-    exit(1)
+@app.get("/metrics")
+def metrics():
+    return "requests_total 1\n", 200, {"Content-Type": "text/plain; version=0.0.4"}
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-
-class WriterService:
-    """Writer service stub."""
-
-    def __init__(self):
-        self.app = web.Application()
-        self.start_time = time.time()
-
-        # Setup routes
-        self.app.router.add_get('/health', self.health)
-        self.app.router.add_get('/metrics', self.metrics)
-        self.app.router.add_get('/', self.index)
-
-    async def index(self, request):
-        """Service index page."""
-        return web.Response(
-            text="FreshPOC Writer Service\n\n"
-                 "Endpoints:\n"
-                 "- GET /health - Health check\n"
-                 "- GET /metrics - Prometheus metrics\n"
-                 "# Add service-specific endpoints here\n",
-            content_type='text/plain'
+@app.get("/apply")
+def apply():
+    try:
+        # Connect to Memgraph via Bolt
+        connection = mgclient.connect(
+            host="memgraph",
+            port=7687
         )
+        
+        # Create demo nodes and edges
+        cursor = connection.cursor()
+        
+        # Create a Repo node
+        cursor.execute("CREATE (r:Repo {name: 'jaffle-shop-classic', type: 'dbt', url: 'https://github.com/dbt-labs/jaffle-shop-classic'})")
+        
+        # Create a DataModel node
+        cursor.execute("CREATE (d:DataModel {name: 'customer_orders', type: 'star_schema'})")
+        
+        # Create an edge between them
+        cursor.execute("MATCH (r:Repo {name: 'jaffle-shop-classic'}), (d:DataModel {name: 'customer_orders'}) CREATE (r)-[:IMPLEMENTS]->(d)")
+        
+        # Commit the transaction
+        connection.commit()
+        
+        # Get some stats
+        cursor.execute("MATCH (n) RETURN count(n) as node_count")
+        node_count = cursor.fetchone()[0]
+        
+        cursor.execute("MATCH ()-[r]->() RETURN count(r) as edge_count")
+        edge_count = cursor.fetchone()[0]
+        
+        connection.close()
+        
+        return {
+            "ok": True, 
+            "status": "apply_complete", 
+            "nodes_created": node_count, 
+            "edges_created": edge_count
+        }
+        
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
-    async def health(self, request):
-        """Health check endpoint."""
-        return web.json_response({
-            "status": "healthy",
-            "service": "writer",
-            "timestamp": datetime.utcnow().isoformat(),
-            "uptime_seconds": int(time.time() - self.start_time)
-        })
-
-    async def metrics(self, request):
-        """Prometheus metrics endpoint."""
-        uptime = time.time() - self.start_time
-
-        metrics = [
-            "# HELP writer_service_uptime_seconds Service uptime in seconds",
-            "# TYPE writer_service_uptime_seconds gauge",
-            f"writer_service_uptime_seconds {uptime}",
-
-            "# HELP writer_service_info Service information",
-            "# TYPE writer_service_info gauge",
-            "writer_service_info{service=\"writer\",version=\"1.0.0\"} 1"
-        ]
-
-        return web.Response(
-            text="\n".join(metrics) + "\n",
-            content_type='text/plain'
-        )
-
-
-async def init_app():
-    """Initialize the application."""
-    service = WriterService()
-    return service.app
-
-
-def main():
-    """Main entry point."""
-    port = int(os.getenv('PORT', 8080))
-    host = os.getenv('HOST', '0.0.0.0')
-
-    logger.info(f"Starting Writer Service on {host}:{port}")
-
-    app = init_app()
-    web.run_app(app, host=host, port=port)
-
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8014")))

@@ -1,30 +1,8 @@
-FROM python:3.10-slim
-
+FROM python:3.11-slim
 WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
-COPY app.py .
-
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash app \
-    && chown -R app:app /app
-USER app
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
-
-# Expose port
-EXPOSE 8080
-
-# Run the application
-CMD ["python", "app.py"]
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN pip install --no-cache-dir fastapi uvicorn[standard] requests mgclient
+COPY app.py /app/app.py
+EXPOSE 8014
+HEALTHCHECK --interval=10s --timeout=3s --retries=5 CMD curl -fsS http://localhost:8014/health || exit 1
+CMD ["python", "/app/app.py"]
