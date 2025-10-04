@@ -180,7 +180,7 @@ class AnalyzerService:
             "messages_consumed": self.messages_consumed,
             "files_analyzed": self.files_analyzed,
             "kafka_consumer_running": self.consumer_thread.is_alive(),
-            "weaviate_connected": self._is_weaviate_ready()
+            "weaviate_connected": await self._is_weaviate_ready()
         })
 
     async def metrics(self, request):
@@ -287,7 +287,8 @@ class AnalyzerService:
         data_object = {key: value for key, value in data_object.items() if value is not None}
 
         try:
-            self.weaviate_client.data_object.create(
+            await asyncio.to_thread(
+                self.weaviate_client.data_object.create,
                 data_object,
                 class_name=class_name,
                 uuid=object_id
@@ -329,14 +330,17 @@ class AnalyzerService:
 
         class_name = request.query.get('class', self.weaviate_class)
 
-        try:
-            response = (
+        def _execute_search():
+            return (
                 self.weaviate_client.query
                 .get(class_name, [self.weaviate_text_property, self.weaviate_metadata_property, 'created_at'])
                 .with_near_text({"concepts": [query_text]})
                 .with_limit(limit)
                 .do()
             )
+
+        try:
+            response = await asyncio.to_thread(_execute_search)
         except Exception as exc:  # pragma: no cover - depends on weaviate availability
             logger.error(f"Weaviate search failed: {exc}")
             return web.json_response(
@@ -349,10 +353,10 @@ class AnalyzerService:
             {"status": "success", "results": hits, "total": len(hits)}
         )
 
-    def _is_weaviate_ready(self) -> bool:
-        """Check if the Weaviate client is reachable."""
+    async def _is_weaviate_ready(self) -> bool:
+        """Check if the Weaviate client is reachable without blocking the event loop."""
         try:
-            return bool(self.weaviate_client.is_ready())
+            return bool(await asyncio.to_thread(self.weaviate_client.is_ready))
         except Exception as exc:  # pragma: no cover - depends on weaviate availability
             logger.warning(f"Unable to reach Weaviate: {exc}")
             return False
