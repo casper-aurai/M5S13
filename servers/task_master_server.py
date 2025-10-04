@@ -1,21 +1,49 @@
 #!/usr/bin/env python3
-"""
-Task Master MCP Server
+"""Task Master MCP Server implementation."""
 
-Provides task and issue management capabilities.
-Implements stdio and WebSocket transport layers.
-"""
+from __future__ import annotations
 
+import asyncio
+import importlib
+import json
+import logging
+import os
+import sqlite3
 import subprocess
+import sys
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+yaml_spec = importlib.util.find_spec("yaml")
+yaml = importlib.import_module("yaml") if yaml_spec is not None else None
+
+
+REPO_CONFIG_PATH = Path(".windsurf/github-repo.json")
+REMOTE_ISSUE_TRIGGER_LABELS = frozenset(
+    {
+        "kafka",
+        "weaviate",
+        "reporting",
+        "airflow",
+        "observability",
+        "dx",
+        "dgraph",
+        "storage",
+        "deployment",
+        "data-flow",
+        "architecture",
+    }
+)
 
 try:
-    from .base_mcp_server import MCPServer, MCPError, Tool
+    from .base_mcp_server import MCPError, MCPServer, Tool
 except ImportError:
     # For standalone execution
-    from base_mcp_server import MCPServer, MCPError, Tool
+    from base_mcp_server import MCPError, MCPServer, Tool
 
 
 class Task:
@@ -29,16 +57,17 @@ class Task:
         priority: str = "medium",
         status: str = "open",
         assignee: str = None,
-        labels: List[str] = None,
+        labels: Optional[List[str]] = None,
         parent_id: str = None,
         project_id: str = None,
         created_at: Optional[datetime] = None,
         updated_at: Optional[datetime] = None,
         completed_at: Optional[datetime] = None,
-        metadata: Dict[str, Any] = None,
-        depends_on: List[str] = None,
-        blocked_by: List[str] = None,
-        subtasks: List[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        depends_on: Optional[List[str]] = None,
+        blocked_by: Optional[List[str]] = None,
+        subtasks: Optional[List[str]] = None,
+        create_remote_issue: bool = True,
     ):
         """Initialize task."""
         self.id = str(uuid.uuid4())
@@ -61,6 +90,7 @@ class Task:
         self.depends_on = depends_on or []
         self.blocked_by = blocked_by or []
         self.subtasks = subtasks or []
+        self.create_remote_issue = bool(create_remote_issue)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert task to dictionary representation."""
@@ -83,6 +113,7 @@ class Task:
             "depends_on": self.depends_on,
             "blocked_by": self.blocked_by,
             "subtasks": self.subtasks,
+            "create_remote_issue": bool(self.create_remote_issue),
         }
 
 
@@ -152,6 +183,7 @@ class TaskDatabase:
                     depends_on TEXT,  -- JSON array
                     blocked_by TEXT,  -- JSON array
                     subtasks TEXT,  -- JSON array
+                    create_remote_issue INTEGER DEFAULT 1,
                     FOREIGN KEY (parent_id) REFERENCES tasks (id),
                     FOREIGN KEY (project_id) REFERENCES projects (id)
                 )
@@ -173,6 +205,15 @@ class TaskDatabase:
                 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks (assignee)
             """)
 
+            # Ensure the create_remote_issue column exists for legacy databases
+            existing_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(tasks)")
+            }
+            if "create_remote_issue" not in existing_columns:
+                conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN create_remote_issue INTEGER DEFAULT 1"
+                )
+
     def save_task(self, task: Task) -> bool:
         """Save task to database."""
         try:
@@ -181,8 +222,8 @@ class TaskDatabase:
                     INSERT OR REPLACE INTO tasks
                     (id, title, description, type, component, priority, status, assignee, labels,
                      parent_id, project_id, created_at, updated_at, completed_at, metadata,
-                     depends_on, blocked_by, subtasks)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     depends_on, blocked_by, subtasks, create_remote_issue)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     task.id,
                     task.title,
@@ -201,7 +242,8 @@ class TaskDatabase:
                     json.dumps(task.metadata),
                     json.dumps(task.depends_on),
                     json.dumps(task.blocked_by),
-                    json.dumps(task.subtasks)
+                    json.dumps(task.subtasks),
+                    int(bool(getattr(task, "create_remote_issue", True))),
                 ))
                 return True
         except Exception as e:
@@ -336,16 +378,7 @@ class TaskDatabase:
 
     def _row_to_task(self, row: sqlite3.Row) -> Task:
         """Convert database row to Task object."""
-        # Find the component field index
-        component_index = None
-        for i, col in enumerate(row.description):
-            if col[0] == 'component':
-                component_index = i
-                break
-
-        component_value = None
-        if component_index is not None and component_index < len(row):
-            component_value = row[component_index]
+        component_value = row["component"] if "component" in row.keys() else None
 
         task = Task(
             title=row["title"],
@@ -369,6 +402,10 @@ class TaskDatabase:
         task.depends_on = json.loads(row["depends_on"]) if row["depends_on"] else []
         task.blocked_by = json.loads(row["blocked_by"]) if row["blocked_by"] else []
         task.subtasks = json.loads(row["subtasks"]) if row["subtasks"] else []
+        if "create_remote_issue" in row.keys():
+            task.create_remote_issue = bool(row["create_remote_issue"])
+        else:
+            task.create_remote_issue = True
 
         return task
 
@@ -388,22 +425,72 @@ class TaskMasterMCPServer(MCPServer):
     def __init__(self, db_path: str = "./data/tasks.db"):
         super().__init__("task-master", "1.0.0")
 
+        self.logger = logging.getLogger(__name__)
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.repo_config = self._load_repo_config()
+        self._enforce_remote_issues = bool(
+            self.repo_config.get("enforce_remote_issues", True)
+        )
+        self.remote_issue_trigger_labels = {
+            label.lower() for label in REMOTE_ISSUE_TRIGGER_LABELS
+        }
         self.database = TaskDatabase(db_path)  # Initialize the database
         self.cascade_rules = self._load_cascade_rules()
         self._init_database()
-
-        # Initialize logger
-        self.logger = logging.getLogger(__name__)
 
     def _init_database(self):
         """Additional database initialization if needed."""
         # The TaskDatabase class handles schema creation
         pass
 
+    def _load_repo_config(self) -> Dict[str, Any]:
+        """Load repository configuration from disk."""
+        if not REPO_CONFIG_PATH.exists():
+            self.logger.debug(
+                "Repo config not found at %s; using defaults", REPO_CONFIG_PATH
+            )
+            return {}
+
+        try:
+            data = json.loads(REPO_CONFIG_PATH.read_text())
+            if not isinstance(data, dict):
+                self.logger.warning(
+                    "Unexpected repo config structure in %s; using defaults",
+                    REPO_CONFIG_PATH,
+                )
+                return {}
+            return data
+        except json.JSONDecodeError as exc:
+            self.logger.warning(
+                "Failed to parse repo config %s: %s", REPO_CONFIG_PATH, exc
+            )
+            return {}
+        except OSError as exc:
+            self.logger.warning(
+                "Unable to read repo config %s: %s", REPO_CONFIG_PATH, exc
+            )
+            return {}
+
+    def _should_create_remote_issue(
+        self, requested_flag: bool, labels: List[str]
+    ) -> bool:
+        """Determine whether remote issue creation should be enabled."""
+        if self._enforce_remote_issues:
+            return True
+
+        normalized_labels = {label.lower() for label in labels if isinstance(label, str)}
+        if normalized_labels & self.remote_issue_trigger_labels:
+            return True
+
+        return bool(requested_flag)
+
     def _load_cascade_rules(self) -> List[Dict[str, Any]]:
         """Load cascade rules from YAML configuration."""
+        if yaml is None:
+            self.logger.debug("PyYAML not available; skipping cascade rules load")
+            return []
+
         try:
             rules_path = Path.cwd() / ".windsurf" / "cascade-rules.yaml"
             if rules_path.exists():
@@ -476,6 +563,7 @@ class TaskMasterMCPServer(MCPServer):
                     priority=task_data.get('priority', 'medium'),
                     labels=task_data.get('labels', []),
                     parent_id=parent_task.id,
+                    create_remote_issue=parent_task.create_remote_issue,
                     metadata={
                         'cascade_generated': True,
                         'cascade_rule': rule['name'],
@@ -507,8 +595,8 @@ class TaskMasterMCPServer(MCPServer):
             cursor.execute('''
                 INSERT OR REPLACE INTO tasks
                 (id, title, description, type, component, priority, status, assignee, labels,
-                 parent_id, project_id, created_at, updated_at, completed_at, metadata, depends_on, blocked_by, subtasks)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 parent_id, project_id, created_at, updated_at, completed_at, metadata, depends_on, blocked_by, subtasks, create_remote_issue)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 task.id, task.title, task.description, task.type, task.component, task.priority,
                 task.status, task.assignee, json.dumps(task.labels),
@@ -516,7 +604,8 @@ class TaskMasterMCPServer(MCPServer):
                 task.updated_at.isoformat() if task.updated_at else None,
                 task.completed_at.isoformat() if task.completed_at else None,
                 json.dumps(task.metadata), json.dumps(task.depends_on),
-                json.dumps(task.blocked_by), json.dumps(task.subtasks)
+                json.dumps(task.blocked_by), json.dumps(task.subtasks),
+                int(bool(getattr(task, "create_remote_issue", True)))
             ))
 
             conn.commit()
@@ -573,6 +662,11 @@ class TaskMasterMCPServer(MCPServer):
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Task IDs this task depends on"
+                    },
+                    "create_remote_issue": {
+                        "type": "boolean",
+                        "description": "Whether to open a remote issue",
+                        "default": True
                     },
                     "metadata": {
                         "type": "object",
@@ -785,11 +879,15 @@ class TaskMasterMCPServer(MCPServer):
         component = params.get("component")
         priority = params.get("priority", "medium")
         assignee = params.get("assignee")
-        labels = params.get("labels", [])
+        labels = params.get("labels") or []
         project_id = params.get("project_id")
         parent_id = params.get("parent_id")
         depends_on = params.get("depends_on", [])
         metadata = params.get("metadata", {})
+        requested_remote_issue = params.get("create_remote_issue", True)
+        create_remote_issue = self._should_create_remote_issue(
+            requested_remote_issue, labels
+        )
 
         # Create task object
         task = Task(
@@ -802,7 +900,8 @@ class TaskMasterMCPServer(MCPServer):
             labels=labels,
             parent_id=parent_id,
             project_id=project_id,
-            metadata=metadata
+            metadata=metadata,
+            create_remote_issue=create_remote_issue,
         )
 
         # Set dependencies
@@ -862,6 +961,8 @@ class TaskMasterMCPServer(MCPServer):
         if not task:
             raise MCPError("TASK_NOT_FOUND", f"Task not found: {task_id}")
 
+        requested_remote_issue = params.get("create_remote_issue", task.create_remote_issue)
+
         # Update fields if provided
         if "title" in params:
             task.title = params["title"]
@@ -885,6 +986,10 @@ class TaskMasterMCPServer(MCPServer):
             task.depends_on = params["depends_on"]
         if "metadata" in params:
             task.metadata.update(params["metadata"])
+
+        task.create_remote_issue = self._should_create_remote_issue(
+            requested_remote_issue, task.labels
+        )
 
         task.updated_at = datetime.utcnow()
 
