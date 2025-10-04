@@ -23,9 +23,29 @@ def check_service_health(url, service_name, timeout=30):
     print(f"❌ {service_name} health check failed after {timeout}s")
     return False
 
+def check_dgraph_data():
+    """Check if Dgraph has data"""
+    try:
+        response = requests.post(
+            "http://localhost:8080/query",
+            headers={"Content-Type": "application/json"},
+            json={"query": "{ all(func: has(repo)) { uid repo name } }"}
+        )
+        if response.status_code == 200:
+            data = response.json()
+            nodes = data.get("data", {}).get("all", [])
+            if nodes:
+                print(f"✅ Dgraph contains {len(nodes)} nodes")
+                return True
+    except:
+        pass
+    
+    print("❌ Dgraph data check failed")
+    return False
+
 def main():
     """Main validation function"""
-    print("🔍 FreshPoC Wave 1 Validation")
+    print("🔍 FreshPoC Dgraph Validation")
     print("=" * 40)
     
     # List of services to check
@@ -44,6 +64,10 @@ def main():
         if not check_service_health(url, name):
             all_healthy = False
     
+    # Check Dgraph data
+    if not check_dgraph_data():
+        all_healthy = False
+    
     # Check if reports directory exists and has content
     import os
     if os.path.exists("reports/latest.md"):
@@ -53,10 +77,10 @@ def main():
     
     print("=" * 40)
     if all_healthy:
-        print("🎉 All services are healthy! PoC validation passed.")
+        print("🎉 All services are healthy and Dgraph integration working!")
         return 0
     else:
-        print("❌ Some services failed validation.")
+        print("❌ Some services or Dgraph checks failed.")
         return 1
 
 if __name__ == "__main__":

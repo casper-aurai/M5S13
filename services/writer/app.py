@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 import uvicorn, os
-import mgclient
+import requests
+import json
 
 app = FastAPI()
 
@@ -15,41 +16,56 @@ def metrics():
 @app.get("/apply")
 def apply():
     try:
-        # Connect to Memgraph via Bolt
-        connection = mgclient.connect(
-            host="memgraph",
-            port=7687
+        dgraph_url = os.getenv("DGRAPH_URL", "http://dgraph:8080")
+        
+        # Step 1: Set up schema
+        schema_payload = {
+            "schema": """
+                name: string @index(term) .
+                repo: string @index(exact) .
+            """
+        }
+        
+        schema_response = requests.post(
+            f"{dgraph_url}/alter",
+            headers={"Content-Type": "application/json"},
+            json=schema_payload
         )
         
-        # Create demo nodes and edges
-        cursor = connection.cursor()
+        if schema_response.status_code not in [200, 201]:
+            return {"ok": False, "error": f"Schema setup failed: {schema_response.text}"}
         
-        # Create a Repo node
-        cursor.execute("CREATE (r:Repo {name: 'jaffle-shop-classic', type: 'dbt', url: 'https://github.com/dbt-labs/jaffle-shop-classic'})")
+        # Step 2: Create mutation
+        mutation_payload = {
+            "set": [
+                {
+                    "repo": "jaffle-shop-classic"
+                },
+                {
+                    "name": "demo-user",
+                    "repo": "jaffle-shop-classic"
+                }
+            ],
+            "commitNow": True
+        }
         
-        # Create a DataModel node
-        cursor.execute("CREATE (d:DataModel {name: 'customer_orders', type: 'star_schema'})")
+        mutation_response = requests.post(
+            f"{dgraph_url}/mutate",
+            headers={"Content-Type": "application/json"},
+            json=mutation_payload
+        )
         
-        # Create an edge between them
-        cursor.execute("MATCH (r:Repo {name: 'jaffle-shop-classic'}), (d:DataModel {name: 'customer_orders'}) CREATE (r)-[:IMPLEMENTS]->(d)")
+        if mutation_response.status_code not in [200, 201]:
+            return {"ok": False, "error": f"Mutation failed: {mutation_response.text}"}
         
-        # Commit the transaction
-        connection.commit()
-        
-        # Get some stats
-        cursor.execute("MATCH (n) RETURN count(n) as node_count")
-        node_count = cursor.fetchone()[0]
-        
-        cursor.execute("MATCH ()-[r]->() RETURN count(r) as edge_count")
-        edge_count = cursor.fetchone()[0]
-        
-        connection.close()
+        mutation_data = mutation_response.json()
         
         return {
             "ok": True, 
             "status": "apply_complete", 
-            "nodes_created": node_count, 
-            "edges_created": edge_count
+            "uids": mutation_data.get("data", {}).get("uids", {}),
+            "nodes_created": len(mutation_payload["set"]),
+            "schema_applied": True
         }
         
     except Exception as e:

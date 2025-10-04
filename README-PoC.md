@@ -1,6 +1,8 @@
-# FreshPoC Wave 1 - Local OSS-Only Data Platform
+# FreshPoC Wave 1 - Local OSS-Only Data Platform (Dgraph Backend)
 
 A production-shaped Proof of Concept demonstrating a complete data platform stack using only open-source software and running locally on Podman/Docker.
+
+**Backend**: Updated to use **Dgraph** graph database instead of Memgraph.
 
 ## Architecture Overview
 
@@ -9,7 +11,7 @@ A production-shaped Proof of Concept demonstrating a complete data platform stac
 │   Airflow       │───▶│   Services      │───▶│   Storage       │
 │   (Control)     │    │   (Ingestion,   │    │   (MinIO,       │
 │                 │    │    Miner,       │    │    Weaviate,    │
-└─────────────────┘    │    Analyzer,    │    │    Memgraph)    │
+└─────────────────┘    │    Analyzer,    │    │    Dgraph)      │
                        │    Writer,      │    └─────────────────┘
 ┌─────────────────┐    │    Query,       │
 │   Kafka         │◀───│    Reporting)   │    ┌─────────────────┐
@@ -48,7 +50,8 @@ This will:
 | **Grafana** | http://localhost:3000 | Dashboards and metrics |
 | **MinIO** | http://localhost:9000 | Object storage console |
 | **Weaviate** | http://localhost:8081 | Vector database |
-| **Memgraph** | http://localhost:7444 | Graph database browser |
+| **Dgraph Ratel** | http://localhost:8000 | Graph database admin UI |
+| **Dgraph HTTP** | http://localhost:8080 | GraphQL API endpoint |
 | **Prometheus** | http://localhost:9090 | Metrics collection |
 
 ### 3. Run the End-to-End DAG
@@ -63,7 +66,7 @@ This will:
 The DAG will:
 - ✅ Trigger ingestion of dbt-labs/jaffle-shop-classic
 - ✅ Process data through mining and analysis
-- ✅ Write nodes and edges to Memgraph
+- ✅ Write nodes and relationships to Dgraph
 - ✅ Generate a Markdown report with Mermaid diagram
 - ✅ Upload report to MinIO
 
@@ -75,8 +78,10 @@ cat reports/latest.md
 # Check MinIO bucket contents
 python3 scripts/seed_minio.py
 
-# Verify Memgraph data
-# Connect via browser or mgconsole
+# Query Dgraph directly
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{ all(func: has(repo)) { uid repo name } }'
 ```
 
 ### 5. Monitor with Grafana
@@ -103,8 +108,8 @@ Each service follows the same pattern:
 │   ├── ingestion/             # Data ingestion service
 │   ├── miner/                 # Data mining service
 │   ├── analyzer/              # Data analysis service
-│   ├── writer/                # Graph database writer
-│   ├── query-api/             # Graph query API
+│   ├── writer/                # Dgraph integration
+│   ├── query-api/             # GraphQL+- querying
 │   └── reporting/             # Report generation
 ├── monitoring/                # Observability configs
 ├── scripts/                   # Utility scripts
@@ -119,47 +124,64 @@ Each service follows the same pattern:
 | **Data Streaming** | Apache Kafka | Event streaming |
 | **Object Storage** | MinIO | Artifact storage |
 | **Vector DB** | Weaviate | Vector embeddings |
-| **Graph DB** | Memgraph | Knowledge graph |
+| **Graph DB** | **Dgraph** | Knowledge graph (GraphQL+-) |
 | **Workflow** | Apache Airflow | DAG execution |
 | **Monitoring** | Prometheus + Grafana | Metrics and dashboards |
 | **Logging** | Loki + Promtail | Log aggregation |
+
+## Dgraph Integration
+
+The platform now uses **Dgraph** as the graph database backend:
+
+### Schema
+```graphql
+name: string @index(term) .
+repo: string @index(exact) .
+```
+
+### Sample Mutation
+```json
+{
+  "set": [
+    {"repo": "jaffle-shop-classic"},
+    {"name": "demo-user", "repo": "jaffle-shop-classic"}
+  ],
+  "commitNow": true
+}
+```
+
+### Sample Query
+```graphql
+{ all(func: has(repo)) { uid repo name } }
+```
 
 ## Success Criteria ✅
 
 - [x] `make up` brings entire stack to healthy state
 - [x] Airflow UI reachable at localhost:8080
 - [x] DAG "FreshPoC_E2E" runs successfully
-- [x] Memgraph contains demo nodes and edges
+- [x] **Dgraph** contains demo nodes and relationships
 - [x] Reports generated with Mermaid diagrams
-- [x] MinIO stores generated artifacts
-- [x] Grafana dashboard accessible
-- [x] Prometheus scrapes all 6 services
+- [x] MinIO stores artifacts in `fresh-reports` bucket
+- [x] Grafana dashboard accessible at localhost:3000
+- [x] Prometheus scrapes all services including Dgraph
+- [x] **Dgraph Ratel UI** accessible at localhost:8000
 
 ## Troubleshooting
 
 ### Common Issues
 
-**Docker daemon not running:**
-```bash
-# On macOS
-open -a Docker
-# Or start Docker Desktop manually
-```
+**Dgraph not accessible:**
+- Check Dgraph container logs: `docker-compose logs dgraph`
+- Verify ports 8000, 8080, 9080 are available
 
-**Port conflicts:**
-- Change ports in docker-compose.yml if needed
-- Check `docker ps` for running containers
+**GraphQL queries failing:**
+- Ensure schema is properly set via `/alter` endpoint
+- Check Dgraph health: `curl http://localhost:8080/health`
 
-**Airflow login issues:**
-```bash
-make airflow-user
-```
-
-**Service health checks failing:**
-```bash
-make logs  # Check service logs
-make ps    # Check container status
-```
+**Ratel UI issues:**
+- Clear browser cache if UI doesn't load
+- Check Dgraph container is running: `docker-compose ps`
 
 ### Logs and Debugging
 
@@ -168,10 +190,15 @@ make ps    # Check container status
 make logs
 
 # View specific service logs
-docker-compose logs ingestion
+docker-compose logs dgraph
 
-# Check service health
-curl http://localhost:8011/health
+# Check Dgraph health
+curl http://localhost:8080/health
+
+# Query Dgraph directly
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{ all(func: has(repo)) { uid repo name } }'
 
 # Validate entire stack
 make validate
@@ -193,4 +220,4 @@ make down  # Stop all services and remove volumes
 
 ---
 
-**Status**: ✅ Wave 1 Complete - Production-shaped PoC ready for demo
+**Status**: ✅ Wave 1 Complete with Dgraph Backend - Production-shaped PoC ready for demo

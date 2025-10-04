@@ -1,4 +1,4 @@
-.PHONY: up down logs ps airflow-user validate
+.PHONY: up down logs ps airflow-user validate test-dgraph
 
 up:
 	docker-compose up -d --build
@@ -18,3 +18,6 @@ airflow-user:
 
 validate:
 	python3 scripts/validate_mcp.py
+
+test-dgraph:
+	python3 scripts/test_dgraph_flow.py

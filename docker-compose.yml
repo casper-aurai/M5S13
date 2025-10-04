@@ -56,19 +56,19 @@ services:
     volumes:
       - weaviate-data:/var/lib/weaviate
 
-  memgraph:
-    image: memgraph/memgraph:2.21.0
-    command: ["--bolt-port=7687","--log-level=INFO"]
+  dgraph:
+    image: dgraph/standalone:latest
     ports:
-      - "7687:7687"
-      - "7444:7444"
+      - "8080:8080"   # HTTP API
+      - "9080:9080"   # gRPC API
+      - "8000:8000"   # Admin UI (Ratel)
+    volumes:
+      - dgraph-data:/dgraph
     healthcheck:
-      test: ["CMD","bash","-lc","echo 'SHOW DATABASES;' | mgconsole -h localhost -p 7687 >/dev/null || exit 1"]
+      test: ["CMD","curl","-f","http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
-      retries: 15
-    volumes:
-      - memgraph-data:/var/lib/memgraph
+      retries: 10
 
   airflow-db:
     image: postgres:15-alpine
@@ -186,18 +186,18 @@ services:
   writer:
     build: ./services/writer
     environment:
-      MEMGRAPH_BOLT: bolt://memgraph:7687
+      DGRAPH_URL: http://dgraph:8080
     depends_on:
-      - memgraph
+      - dgraph
     ports:
       - "8014:8014"
 
   query-api:
     build: ./services/query-api
     environment:
-      MEMGRAPH_BOLT: bolt://memgraph:7687
+      DGRAPH_URL: http://dgraph:8080
     depends_on:
-      - memgraph
+      - dgraph
     ports:
       - "8015:8015"
 
@@ -207,13 +207,15 @@ services:
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: admin
       MINIO_SECRET_KEY: adminadmin
+      DGRAPH_URL: http://dgraph:8080
     depends_on:
       - minio
+      - dgraph
     ports:
       - "8016:8016"
 
 volumes:
   minio-data: {}
   weaviate-data: {}
-  memgraph-data: {}
+  dgraph-data: {}
   airflow-db: {}

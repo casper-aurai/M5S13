@@ -12,3 +12,8 @@ scrape_configs:
           - writer:8014
           - query-api:8015
           - reporting:8016
+
+  - job_name: dgraph
+    static_configs:
+      - targets:
+          - dgraph:8080
