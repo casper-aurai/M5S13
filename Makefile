@@ -17,7 +17,7 @@ help:
 	@echo "  make status      - Show status of all containers"
 	@echo "  make health      - Check health of all services"
 	@echo "  make clean       - Stop services and remove all data"
-	@echo "  make topics      - List Kafka topics"
+	@echo "  make kafka-topics - Create Kafka topics (repos.ingested, code.mined, code.analyzed, graph.apply)"
 	@echo "  make kafka-ui   - Open Kafka UI in browser"
 	@echo "  make grafana    - Open Grafana in browser"
 	@echo "  make airflow    - Open Airflow UI in browser"
@@ -89,11 +89,19 @@ airflow:
 # DATA MANAGEMENT
 # ========================================
 
-topics:
-	@echo "Kafka topics:"
-	podman exec freshpoc-kafka kafka-topics --bootstrap-server localhost:9092 --list
+kafka-topics:
+	@echo "Creating Kafka topics..."
+	@echo "Creating repos.ingested topic..."
+	@podman exec freshpoc-kafka kafka-topics --bootstrap-server localhost:9092 --create --topic repos.ingested --partitions 3 --replication-factor 1 --if-not-exists || true
+	@echo "Creating code.mined topic..."
+	@podman exec freshpoc-kafka kafka-topics --bootstrap-server localhost:9092 --create --topic code.mined --partitions 3 --replication-factor 1 --if-not-exists || true
+	@echo "Creating code.analyzed topic..."
+	@podman exec freshpoc-kafka kafka-topics --bootstrap-server localhost:9092 --create --topic code.analyzed --partitions 3 --replication-factor 1 --if-not-exists || true
+	@echo "Creating graph.apply topic..."
+	@podman exec freshpoc-kafka kafka-topics --bootstrap-server localhost:9092 --create --topic graph.apply --partitions 3 --replication-factor 1 --if-not-exists || true
+	@echo "✅ Kafka topics created successfully"
+	@make topics
 
-clean:
 	@echo "Cleaning up all data and containers..."
 	podman-compose -f docker/docker-compose.yml down -v
 	podman volume prune -f
