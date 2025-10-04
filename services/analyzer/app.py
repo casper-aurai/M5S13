@@ -8,13 +8,26 @@ Provides a basic HTTP server for the analyzer service with:
 - Placeholder endpoints for service-specific functionality
 """
 
-import asyncio
 import json
 import logging
 import os
 import time
 from datetime import datetime
-from typing import Dict, Any
+from uuid import uuid4
+
+# Add aiohttp dependency
+try:
+    from aiohttp import web
+except ImportError:
+    print("aiohttp not installed. Install with: pip install aiohttp")
+    exit(1)
+
+# Add kafka-python dependency
+try:
+    from kafka import KafkaConsumer, KafkaProducer
+except ImportError:
+    print("kafka-python not installed. Install with: pip install kafka-python")
+    exit(1)
 
 # Add weaviate-client dependency
 try:
@@ -22,8 +35,6 @@ try:
 except ImportError:
     print("weaviate-client not installed. Install with: pip install weaviate-client")
     exit(1)
-
-
 
 # Configure logging
 logging.basicConfig(
@@ -41,10 +52,17 @@ class AnalyzerService:
         self.start_time = time.time()
         self.files_analyzed = 0
         self.messages_consumed = 0
-        
+
+        # Weaviate configuration
+        weaviate_url = os.getenv('WEAVIATE_URL', 'http://localhost:8080')
+        self.weaviate_client = weaviate.Client(weaviate_url)
+        self.weaviate_class = os.getenv('WEAVIATE_CLASS', 'AnalyzerDocument')
+        self.weaviate_text_property = os.getenv('WEAVIATE_TEXT_PROPERTY', 'text')
+        self.weaviate_metadata_property = os.getenv('WEAVIATE_METADATA_PROPERTY', 'metadata')
+
         # Kafka configuration
         kafka_brokers = os.getenv('KAFKA_BROKERS', 'localhost:9092')
-        
+
         # Kafka consumer for code.mined topic
         self.consumer = KafkaConsumer(
             'code.mined',
@@ -69,6 +87,8 @@ class AnalyzerService:
         self.app.router.add_get('/metrics', self.metrics)
         self.app.router.add_get('/', self.index)
         self.app.router.add_post('/analyze', self.analyze)
+        self.app.router.add_post('/embed', self.embed)
+        self.app.router.add_get('/search', self.search)
         
         # Start Kafka consumer in background
         import threading
@@ -142,6 +162,8 @@ class AnalyzerService:
                  "- GET /health - Health check\n"
                  "- GET /metrics - Prometheus metrics\n"
                  "- POST /analyze - Manually trigger file analysis\n"
+                 "- POST /embed - Store analyzer snippets in Weaviate\n"
+                 "- GET /search - Query stored snippets in Weaviate\n"
                  "\nKafka Integration:\n"
                  f"- Consuming from: code.mined ({self.messages_consumed} messages)\n"
                  f"- Publishing to: code.analyzed ({self.files_analyzed} files)\n",
@@ -157,7 +179,8 @@ class AnalyzerService:
             "uptime_seconds": int(time.time() - self.start_time),
             "messages_consumed": self.messages_consumed,
             "files_analyzed": self.files_analyzed,
-            "kafka_consumer_running": self.consumer_thread.is_alive()
+            "kafka_consumer_running": self.consumer_thread.is_alive(),
+            "weaviate_connected": self._is_weaviate_ready()
         })
 
     async def metrics(self, request):
@@ -226,6 +249,113 @@ class AnalyzerService:
                 {"status": "error", "message": str(e)},
                 status=500
             )
+
+    async def embed(self, request):
+        """Persist analyzer insights to Weaviate."""
+        try:
+            payload = await request.json()
+        except Exception as exc:  # pragma: no cover - aiohttp specific exception types
+            logger.error(f"Invalid JSON payload for /embed: {exc}")
+            return web.json_response(
+                {"status": "error", "message": "Invalid JSON payload"},
+                status=400
+            )
+
+        text = payload.get('text')
+        if not text:
+            return web.json_response(
+                {"status": "error", "message": "'text' field is required"},
+                status=400
+            )
+
+        metadata = payload.get('metadata', {})
+        if metadata and not isinstance(metadata, dict):
+            return web.json_response(
+                {"status": "error", "message": "'metadata' must be an object"},
+                status=400
+            )
+
+        class_name = payload.get('class', self.weaviate_class)
+        object_id = payload.get('id') or str(uuid4())
+        data_object = {
+            self.weaviate_text_property: text,
+            self.weaviate_metadata_property: json.dumps(metadata) if metadata else None,
+            'created_at': datetime.utcnow().isoformat()
+        }
+
+        # Remove None values to avoid schema violations
+        data_object = {key: value for key, value in data_object.items() if value is not None}
+
+        try:
+            self.weaviate_client.data_object.create(
+                data_object,
+                class_name=class_name,
+                uuid=object_id
+            )
+        except Exception as exc:  # pragma: no cover - depends on weaviate availability
+            logger.error(f"Failed to store object in Weaviate: {exc}")
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=502
+            )
+
+        return web.json_response(
+            {
+                "status": "success",
+                "id": object_id,
+                "class": class_name,
+                "properties": data_object
+            },
+            status=201
+        )
+
+    async def search(self, request):
+        """Search stored analyzer snippets in Weaviate."""
+        query_text = request.query.get('q') or request.query.get('query')
+        if not query_text:
+            return web.json_response(
+                {"status": "error", "message": "Query parameter 'q' is required"},
+                status=400
+            )
+
+        limit_param = request.query.get('limit', '5')
+        try:
+            limit = max(1, min(20, int(limit_param)))
+        except ValueError:
+            return web.json_response(
+                {"status": "error", "message": "'limit' must be an integer"},
+                status=400
+            )
+
+        class_name = request.query.get('class', self.weaviate_class)
+
+        try:
+            response = (
+                self.weaviate_client.query
+                .get(class_name, [self.weaviate_text_property, self.weaviate_metadata_property, 'created_at'])
+                .with_near_text({"concepts": [query_text]})
+                .with_limit(limit)
+                .do()
+            )
+        except Exception as exc:  # pragma: no cover - depends on weaviate availability
+            logger.error(f"Weaviate search failed: {exc}")
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=502
+            )
+
+        hits = response.get('data', {}).get('Get', {}).get(class_name, [])
+        return web.json_response(
+            {"status": "success", "results": hits, "total": len(hits)}
+        )
+
+    def _is_weaviate_ready(self) -> bool:
+        """Check if the Weaviate client is reachable."""
+        try:
+            return bool(self.weaviate_client.is_ready())
+        except Exception as exc:  # pragma: no cover - depends on weaviate availability
+            logger.warning(f"Unable to reach Weaviate: {exc}")
+            return False
 
 
 async def init_app():
