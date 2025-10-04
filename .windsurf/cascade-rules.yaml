@@ -331,7 +331,24 @@ cascadeRules:
           github_issue_number: "${result.number}"
     labels: ["automation", "github-sync"]
 
-# --- Existing rules continue as before ---
+  - name: "Close GitHub issues when tasks complete"
+    trigger:
+      whenTool: "task-master.task_update"
+      condition:
+        statusEquals: "completed"
+        metadataPath: "github.issue_number"
+    actions:
+      - tool: "github.comment_issue"
+        with:
+          number: "${task.metadata.github.issue_number}"
+          body: "Task ${task.title} marked completed automatically by Task Master."
+      - tool: "github.close_issue"
+        with:
+          number: "${task.metadata.github.issue_number}"
+          reason: "completed"
+    labels: ["github", "automation", "issue-triage"]
+
+# --- global config stays as-is ---
 globalConfig:
   maxConcurrentTasks: 10
   taskTimeoutMinutes: 60
