@@ -8,7 +8,6 @@ Provides a basic HTTP server for the analyzer service with:
 - Placeholder endpoints for service-specific functionality
 """
 
-import asyncio
 import json
 import logging
 import os
