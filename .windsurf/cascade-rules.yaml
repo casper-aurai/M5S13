@@ -104,6 +104,26 @@ cascadeRules:
           description: "Commit ${component} changes with conventional format"
           priority: "medium"
           labels: ["git", "commit"]
+          metadata:
+            git:
+              commitMessageGuidance:
+                requiresDescriptiveSummary: true
+                summaryField: "descriptive_summary"
+                summaryTemplate: "Provide a descriptive summary of ${component} changes"
+                styleGuide: "Use present tense, highlight primary impact, limit to 72 characters"
+      - createTask:
+          component: "commit-validation"
+          description: "Validate descriptive summary commit for ${component}"
+          priority: "medium"
+          labels: ["git", "commit", "validation"]
+          metadata:
+            git:
+              validation:
+                requiresSummaryCheck: true
+                summaryField: "descriptive_summary"
+                checklist:
+                  - "Confirm commit exists with descriptive summary"
+                  - "Ensure summary text is copied into release notes tracker"
       - createTask:
           component: "pr"
           description: "Create PR with proper labels and ADR references"
