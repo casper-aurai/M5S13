@@ -794,7 +794,7 @@ Examples:
     p.add_argument("--dry-run", action="store_true", help="Show what would be done without writing files")
     p.add_argument("--show-mermaid", action="store_true", help="Show detected mermaid diagrams")
     p.add_argument("--split-sections", action="store_true", help="Split output into organized sections in subdirectories")
-    p.add_argument("--sections-dir", default="docs/sections", help="Directory to store organized sections (default: docs/sections)")
+    p.add_argument("--encoding", default="utf-8", help="Input file encoding (default: utf-8)")
 
     args = p.parse_args(argv)
 

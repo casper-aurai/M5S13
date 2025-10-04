@@ -1,0 +1,270 @@
+cascadeRules:
+  - name: "Service Scaffold Cascade"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        component: "service"
+    actions:
+      - createTask:
+          component: "${component}"
+          description: "Scaffold ${component} service (http skeleton, Dockerfile, health, metrics)"
+          priority: "high"
+          labels: ["scaffold", "service", "backend"]
+      - createTask:
+          component: "observability"
+          description: "Add /health & /metrics + Prometheus scrape config for ${component}"
+          priority: "high"
+          labels: ["observability", "monitoring", "prometheus"]
+      - createTask:
+          component: "documentation"
+          description: "Generate ADR stub and update README for ${component}"
+          priority: "medium"
+          labels: ["documentation", "adr"]
+      - createTask:
+          component: "git"
+          description: "Create branch and commit scaffold setup for ${component}"
+          priority: "medium"
+          labels: ["git", "branch", "commit"]
+    labels: ["scaffold", "auto-generated"]
+    dependencies:
+      - "service scaffold must succeed first"
+
+  - name: "API Endpoint Cascade"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        descriptionContains: "/api/"
+    actions:
+      - createTask:
+          component: "test"
+          description: "Write unit tests for new API endpoints"
+          priority: "high"
+          labels: ["test", "api", "unittest"]
+      - createTask:
+          component: "documentation"
+          description: "Document new API endpoints in docs"
+          priority: "medium"
+          labels: ["documentation", "api-docs"]
+    labels: ["api", "test", "docs"]
+    dependencies:
+      - "descriptionMustExist"
+
+  - name: "Observability Cascade"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        component: "observability"
+    actions:
+      - createTask:
+          component: "prometheus"
+          description: "Add Prometheus scrape config for new target ${component}"
+          priority: "high"
+          labels: ["monitoring", "prometheus", "scrape"]
+      - createTask:
+          component: "grafana"
+          description: "Add dashboard panel for ${component}"
+          priority: "medium"
+          labels: ["monitoring", "grafana", "dashboard"]
+    labels: ["monitoring", "auto-generated"]
+    dependencies:
+      - "observability scaffold must exist"
+
+  - name: "Documentation Cascade"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        component: "documentation"
+    actions:
+      - createTask:
+          component: "adr"
+          description: "Generate ADR for architectural decision in ${component}"
+          priority: "medium"
+          labels: ["adr", "architecture"]
+      - createTask:
+          component: "readme"
+          description: "Update README.md with ${component} changes"
+          priority: "medium"
+          labels: ["readme", "documentation"]
+    labels: ["docs", "auto-generated"]
+
+  - name: "Git Workflow Cascade"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        component: "git"
+    actions:
+      - createTask:
+          component: "branch"
+          description: "Create feature branch for ${component} work"
+          priority: "high"
+          labels: ["git", "branch"]
+      - createTask:
+          component: "commit"
+          description: "Commit ${component} changes with conventional format"
+          priority: "medium"
+          labels: ["git", "commit"]
+      - createTask:
+          component: "pr"
+          description: "Create PR with proper labels and ADR references"
+          priority: "low"
+          labels: ["git", "pr"]
+    labels: ["git", "workflow"]
+
+  - name: "Testing Cascade"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        component: "test"
+    actions:
+      - createTask:
+          component: "unittest"
+          description: "Write unit tests for ${component}"
+          priority: "high"
+          labels: ["test", "unittest"]
+      - createTask:
+          component: "integration"
+          description: "Write integration tests for ${component}"
+          priority: "medium"
+          labels: ["test", "integration"]
+      - createTask:
+          component: "e2e"
+          description: "Write end-to-end tests for ${component}"
+          priority: "low"
+          labels: ["test", "e2e"]
+    labels: ["test", "auto-generated"]
+
+  - name: "Security Review Cascade"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        component: "security"
+    actions:
+      - createTask:
+          component: "audit"
+          description: "Security audit for ${component}"
+          priority: "high"
+          labels: ["security", "audit"]
+      - createTask:
+          component: "vulnerability"
+          description: "Vulnerability assessment for ${component}"
+          priority: "high"
+          labels: ["security", "vulnerability"]
+      - createTask:
+          component: "compliance"
+          description: "Compliance check for ${component}"
+          priority: "medium"
+          labels: ["security", "compliance"]
+    labels: ["security", "auto-generated"]
+
+  - name: "Performance Cascade"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        component: "performance"
+    actions:
+      - createTask:
+          component: "benchmark"
+          description: "Performance benchmark for ${component}"
+          priority: "high"
+          labels: ["performance", "benchmark"]
+      - createTask:
+          component: "profiling"
+          description: "Profiling analysis for ${component}"
+          priority: "medium"
+          labels: ["performance", "profiling"]
+      - createTask:
+          component: "optimization"
+          description: "Performance optimization for ${component}"
+          priority: "medium"
+          labels: ["performance", "optimization"]
+    labels: ["performance", "auto-generated"]
+
+  - name: "Database Migration Cascade"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        component: "database"
+    actions:
+      - createTask:
+          component: "schema"
+          description: "Design database schema for ${component}"
+          priority: "high"
+          labels: ["database", "schema"]
+      - createTask:
+          component: "migration"
+          description: "Create migration scripts for ${component}"
+          priority: "high"
+          labels: ["database", "migration"]
+      - createTask:
+          component: "seed"
+          description: "Create seed data for ${component}"
+          priority: "medium"
+          labels: ["database", "seed"]
+    labels: ["database", "auto-generated"]
+
+  - name: "Container Deployment Cascade"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        component: "deployment"
+    actions:
+      - createTask:
+          component: "dockerfile"
+          description: "Create Dockerfile for ${component}"
+          priority: "high"
+          labels: ["deployment", "dockerfile"]
+      - createTask:
+          component: "compose"
+          description: "Update docker-compose.yml for ${component}"
+          priority: "high"
+          labels: ["deployment", "compose"]
+      - createTask:
+          component: "healthcheck"
+          description: "Implement health check for ${component}"
+          priority: "high"
+          labels: ["deployment", "healthcheck"]
+    labels: ["deployment", "auto-generated"]
+
+# Global configuration for cascade rules
+globalConfig:
+  maxConcurrentTasks: 10
+  taskTimeoutMinutes: 60
+  retryFailedTasks: true
+  maxRetries: 3
+  notificationChannels: ["#freshpoc-dev"]
+
+# Task templates for common patterns
+taskTemplates:
+  serviceScaffold:
+    type: "service"
+    priority: "high"
+    labels: ["scaffold", "service", "backend"]
+    assignee: "${creator}"
+    metadata:
+      template: "service-scaffold"
+
+  observabilityTask:
+    type: "observability"
+    priority: "high"
+    labels: ["monitoring", "prometheus", "grafana"]
+    assignee: "${creator}"
+    metadata:
+      template: "observability"
+
+  documentationTask:
+    type: "documentation"
+    priority: "medium"
+    labels: ["docs", "readme", "adr"]
+    assignee: "${creator}"
+    metadata:
+      template: "documentation"
+
+# Security constraints for cascade rule execution
+securityConstraints:
+  maxTasksPerHour: 100
+  maxTasksPerUser: 50
+  requireApprovalFor:
+    - "database"
+    - "security"
+    - "deployment"
+  blockedComponents: []

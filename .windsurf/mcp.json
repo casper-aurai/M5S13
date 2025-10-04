@@ -15,7 +15,16 @@
       "args": ["${workspaceFolder}/servers/git_server.py"],
       "env": {
         "MCP_GIT_ROOT": "${workspaceFolder}"
-      }
+      },
+      "permittedTools": [
+        "git_status", "git_branch", "git_commit", "git_add", "git_diff", "git_log", "git_remote", "git_checkout"
+      ],
+      "sandboxConstraints": [
+        "Limited to local repository only",
+        "No access to other repositories",
+        "Safe git command execution",
+        "Repository boundary validation"
+      ]
     },
     "redis": {
       "transport": "stdio",
@@ -24,7 +33,18 @@
       "env": {
         "REDIS_URL": "redis://localhost:6379",
         "REDIS_DB": "1"
-      }
+      },
+      "permittedTools": [
+        "redis_get", "redis_set", "redis_del", "redis_keys", "redis_ttl",
+        "redis_lpush", "redis_rpush", "redis_lpop", "redis_hset", "redis_hget", "redis_hgetall",
+        "redis_session_create", "redis_session_get", "redis_session_update", "redis_session_delete"
+      ],
+      "sandboxConstraints": [
+        "Only for ephemeral agent state, not business data",
+        "Connection pooling and limits",
+        "Session TTL enforcement",
+        "No access to production Redis instances"
+      ]
     },
     "fetch": {
       "transport": "stdio",
@@ -32,16 +52,52 @@
       "args": ["${workspaceFolder}/servers/fetch_server.py"],
       "env": {
         "FETCH_WHITELIST": "127.0.0.1:8080,127.0.0.1:3000,localhost:891*"
-      }
+      },
+      "permittedTools": [
+        "http_get", "http_post", "http_health", "http_validate_url"
+      ],
+      "sandboxConstraints": [
+        "Whitelist only internal services (127.0.0.1 ports)",
+        "No external HTTP calls",
+        "Request timeout and size limits",
+        "SSL/TLS validation required"
+      ]
     },
     "podman": {
       "transport": "websocket",
-      "url": "ws://127.0.0.1:8913"
+      "url": "ws://127.0.0.1:8913",
+      "env": {
+        "PODMAN_SOCKET": "/run/user/$(id -u)/podman/podman.sock"
+      },
+      "permittedTools": [
+        "podman_ps", "podman_run", "podman_stop", "podman_start", "podman_logs",
+        "podman_inspect", "podman_images", "podman_pull", "podman_compose_up", "podman_compose_down"
+      ],
+      "sandboxConstraints": [
+        "Must connect to Podman socket, limit to project containers",
+        "No access to host processes",
+        "Container/project isolation",
+        "Resource limits and monitoring"
+      ]
     },
     "sequential-thinking": {
       "transport": "stdio",
       "command": "python",
-      "args": ["${workspaceFolder}/servers/sequential_thinking_server.py"]
+      "args": ["${workspaceFolder}/servers/sequential_thinking_server.py"],
+      "env": {
+        "SESSION_TIMEOUT": "3600",
+        "MAX_SESSIONS": "100"
+      },
+      "permittedTools": [
+        "sequential_thinking", "thought_create", "thought_complete", "thought_list", "thought_get",
+        "session_list", "session_get"
+      ],
+      "sandboxConstraints": [
+        "Stateful sessions identified by session IDs",
+        "Session timeout and cleanup",
+        "Memory limits for thought storage",
+        "No persistent data outside sessions"
+      ]
     },
     "task-master": {
       "transport": "stdio",
@@ -49,15 +105,68 @@
       "args": ["${workspaceFolder}/servers/task_master_server.py"],
       "env": {
         "TASK_DB_PATH": "${workspaceFolder}/data/tasks.db"
-      }
+      },
+      "permittedTools": [
+        "task_create", "task_get", "task_update", "task_list", "task_delete", "task_link",
+        "project_create", "project_list"
+      ],
+      "sandboxConstraints": [
+        "Use internal store / database for tasks",
+        "SQLite backend with proper isolation",
+        "No external system access",
+        "Task relationship validation"
+      ]
     },
     "http-mcp": {
       "transport": "stdio",
       "command": "python",
       "args": ["${workspaceFolder}/servers/http_mcp_server.py"],
       "env": {
-        "HTTP_MCP_WHITELIST": "127.0.0.1,localhost,0.0.0.0"
-      }
+        "HTTP_MCP_WHITELIST": "127.0.0.1,localhost,0.0.0.0",
+        "HTTP_MCP_TIMEOUT": "30",
+        "HTTP_MCP_MAX_RESPONSE_SIZE": "1048576"
+      },
+      "permittedTools": [
+        "http_get", "http_post", "http_put", "http_delete", "endpoint_health", "validate_endpoint"
+      ],
+      "sandboxConstraints": [
+        "Whitelist pattern matching",
+        "Request/response filtering and validation",
+        "Rate limiting and timeout controls",
+        "No access to external services"
+      ]
+    }
+  },
+  "securityRules": {
+    "filesystem": {
+      "blockedPaths": ["/etc", "/usr", "/sys", "/proc", "/dev", "/root", "/home"],
+      "maxFileSize": "10485760",
+      "allowedExtensions": ["py", "md", "yml", "yaml", "json", "txt", "sh", "Dockerfile"],
+      "requireSandbox": true
+    },
+    "git": {
+      "allowedCommands": ["status", "branch", "commit", "add", "diff", "log", "remote", "checkout"],
+      "maxCommitSize": "1048576",
+      "requireRepoBoundary": true,
+      "noForcePush": true
+    },
+    "fetch": {
+      "whitelistOnly": true,
+      "blockedHosts": ["169.254.169.254", "metadata.google.internal", "*.amazonaws.com"],
+      "maxResponseSize": "1048576",
+      "timeoutMax": 300
+    },
+    "podman": {
+      "requireUserSocket": true,
+      "maxContainers": 100,
+      "noPrivileged": true,
+      "allowedNetworks": ["bridge", "freshpoc-network"]
+    },
+    "redis": {
+      "allowedOperations": ["get", "set", "del", "keys", "ttl", "lpush", "rpush", "lpop", "hset", "hget", "hgetall"],
+      "maxKeySize": "1024",
+      "maxValueSize": "1048576",
+      "sessionOnly": true
     }
   }
 }
