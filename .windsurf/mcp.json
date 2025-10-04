@@ -1,96 +1,124 @@
 {
-  {
-    "mcpServers": {
-      "filesystem": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["${workspaceFolder}/servers/filesystem_server.py"],
-        "env": {
-          "MCP_FS_ROOT": "${workspaceFolder}",
-          "MCP_FS_READONLY": "false"
-        }
-      },
-      "git": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["${workspaceFolder}/servers/git_server.py"],
-        "env": {
-          "MCP_GIT_ROOT": "${workspaceFolder}"
-        }
-      },
-      "fetch": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["${workspaceFolder}/servers/fetch_server.py"],
-        "env": {
-          "FETCH_WHITELIST": "127.0.0.1:8080,127.0.0.1:3000,localhost:891*"
-        }
-      },
-      "podman": {
-        "transport": "websocket",
-        "url": "ws://127.0.0.1:8913",
-        "env": {
-          "PODMAN_SOCKET": "/run/user/$(id -u)/podman/podman.sock"
-        },
-        "optional": true
-      },
-      "redis": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["${workspaceFolder}/servers/redis_server.py"],
-        "env": {
-          "REDIS_URL": "redis://localhost:6379",
-          "REDIS_DB": "1"
-        },
-        "optional": true
-      },
-      "sequential-thinking": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["${workspaceFolder}/servers/sequential_thinking_server.py"]
-      },
-      "task-master": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["${workspaceFolder}/servers/task_master_server.py"],
-        "env": {
-          "TASK_DB_PATH": "${workspaceFolder}/data/tasks.db"
-        }
-      },
-      "http-mcp": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["${workspaceFolder}/servers/http_mcp_server.py"],
-        "env": {
-          "HTTP_MCP_WHITELIST": "127.0.0.1,localhost,0.0.0.0",
-          "HTTP_MCP_TIMEOUT": "30",
-          "HTTP_MCP_MAX_RESPONSE_SIZE": "1048576"
-        }
-      },
-      "github": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["${workspaceFolder}/servers/github_mcp.py"],
-        "enabled": true
+  "mcpServers": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/filesystem_server.py"],
+      "env": {
+        "MCP_FS_ROOT": "${workspaceFolder}",
+        "MCP_FS_READONLY": "false"
       }
+    },
+    "git": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/git_server.py"],
+      "env": {
+        "MCP_GIT_ROOT": "${workspaceFolder}"
+      }
+    },
+    "fetch": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/fetch_server.py"],
+      "env": {
+        "FETCH_WHITELIST": "127.0.0.1:8080,127.0.0.1:3000,localhost:891*"
+      }
+    },
+    "podman": {
+      "transport": "websocket",
+      "url": "ws://127.0.0.1:8913",
+      "env": {
+        "PODMAN_SOCKET": "/run/user/$(id -u)/podman/podman.sock"
+      },
+      "optional": true
+    },
+    "redis": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/redis_server.py"],
+      "env": {
+        "REDIS_URL": "redis://localhost:6379",
+        "REDIS_DB": "1"
+      },
+      "optional": true
+    },
+    "sequential-thinking": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/sequential_thinking_server.py"]
+    },
+    "task-master": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/task_master_server.py"],
+      "env": {
+        "TASK_DB_PATH": "${workspaceFolder}/data/tasks.db"
+      }
+    },
+    "http-mcp": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/http_mcp_server.py"],
+      "env": {
+        "HTTP_MCP_WHITELIST": "127.0.0.1,localhost,0.0.0.0",
+        "HTTP_MCP_TIMEOUT": "30",
+        "HTTP_MCP_MAX_RESPONSE_SIZE": "1048576"
+      }
+    },
+    "github": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/github_mcp.py"],
+      "enabled": true
     }
   },
   "securityRules": {
     "filesystem": {
-      "blockedPaths": ["/etc", "/usr", "/sys", "/proc", "/dev", "/root", "/home"],
+      "blockedPaths": [
+        "/etc",
+        "/usr",
+        "/sys",
+        "/proc",
+        "/dev",
+        "/root",
+        "/home"
+      ],
       "maxFileSize": "10485760",
-      "allowedExtensions": ["py", "md", "yml", "yaml", "json", "txt", "sh", "Dockerfile"],
+      "allowedExtensions": [
+        "py",
+        "md",
+        "yml",
+        "yaml",
+        "json",
+        "txt",
+        "sh",
+        "Dockerfile"
+      ],
       "requireSandbox": true
     },
     "git": {
-      "allowedCommands": ["status", "branch", "commit", "add", "diff", "log", "remote", "checkout"],
+      "allowedCommands": [
+        "status",
+        "branch",
+        "commit",
+        "add",
+        "diff",
+        "log",
+        "remote",
+        "checkout"
+      ],
       "maxCommitSize": "1048576",
       "requireRepoBoundary": true,
       "noForcePush": true
     },
     "fetch": {
       "whitelistOnly": true,
-      "blockedHosts": ["169.254.169.254", "metadata.google.internal", "*.amazonaws.com"],
+      "blockedHosts": [
+        "169.254.169.254",
+        "metadata.google.internal",
+        "*.amazonaws.com"
+      ],
       "maxResponseSize": "1048576",
       "timeoutMax": 300
     },
@@ -98,10 +126,25 @@
       "requireUserSocket": true,
       "maxContainers": 100,
       "noPrivileged": true,
-      "allowedNetworks": ["bridge", "freshpoc-network"]
+      "allowedNetworks": [
+        "bridge",
+        "freshpoc-network"
+      ]
     },
     "redis": {
-      "allowedOperations": ["get", "set", "del", "keys", "ttl", "lpush", "rpush", "lpop", "hset", "hget", "hgetall"],
+      "allowedOperations": [
+        "get",
+        "set",
+        "del",
+        "keys",
+        "ttl",
+        "lpush",
+        "rpush",
+        "lpop",
+        "hset",
+        "hget",
+        "hgetall"
+      ],
       "maxKeySize": "1024",
       "maxValueSize": "1048576",
       "sessionOnly": true
