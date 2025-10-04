@@ -40,11 +40,11 @@
 - **Documentation Verification**: Ensure all documented commands and endpoints work
 
 ## MCP Server Rules
-- **Server Validation**: All MCP servers must pass the validation script before deployment
+- **Rule Governance**: Use the Cascade Rules MCP Server for centralized management of AI agent behavior rules
 - **Health Endpoints**: Every MCP server must expose /health and /metrics endpoints
 - **Container Operations**: Use the Podman MCP Server for all container management operations instead of direct podman/docker commands
 - **State Management**: Use the Redis MCP Server for ephemeral agent state storage and inter-agent coordination
-- **Test Coverage**: All MCP servers must have automated test suites
+- **Task Management**: Use the Task Master Integration Server for GitHub Issues synchronization and task tracking
 
 ## Review and Merge Rules
 - **Self-Review**: Authors should review their own changes before requesting review
