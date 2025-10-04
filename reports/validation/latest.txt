@@ -1,0 +1,18 @@
+MCP Server Validation Report
+============================
+
+Generated: Sat Oct  4 06:00:17 2025
+Duration: 0.09s
+Success Rate: 100.0%
+
+Service Status:
+--------------------
+✅ filesystem: 1/1 tests passed
+✅ git: 1/1 tests passed
+✅ fetch: 1/1 tests passed
+✅ task-master: 1/1 tests passed
+✅ sequential-thinking: 1/1 tests passed
+✅ http-mcp: 1/1 tests passed
+✅ podman: 1/1 tests passed
+❌ redis: 1/1 tests passed
+    ⚠️  Redis not available - using mock mode for state management

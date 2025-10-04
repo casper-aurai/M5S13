@@ -24,7 +24,7 @@ import time
 import asyncio
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from enum import Enum
 
 class ServiceStatus(Enum):
@@ -338,7 +338,15 @@ class MCPValidator:
                 "passed_tests": passed_tests,
                 "success_rate": passed_tests / total_tests if total_tests > 0 else 0
             },
-            "services": [asdict(result) for result in self.results],
+            "services": [{
+                "service_name": result.service_name,
+                "status": result.status.value,
+                "tests_passed": result.tests_passed,
+                "tests_total": result.tests_total,
+                "errors": result.errors,
+                "warnings": result.warnings,
+                "timestamp": result.timestamp
+            } for result in self.results],
             "environment": {
                 "platform": sys.platform,
                 "python_version": sys.version,
@@ -453,7 +461,5 @@ def main():
     validator = MCPValidator(workspace_root)
     success = validator.run()
     sys.exit(0 if success else 1)
-
-
 if __name__ == "__main__":
-    main()</parameter}],
+    main()

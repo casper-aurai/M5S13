@@ -1,0 +1,94 @@
+{
+  "summary": {
+    "timestamp": 1759550417.8255758,
+    "duration": 0.09320926666259766,
+    "total_services": 8,
+    "available_services": 7,
+    "mock_services": 0,
+    "failed_services": 0,
+    "total_tests": 8,
+    "passed_tests": 8,
+    "success_rate": 1.0
+  },
+  "services": [
+    {
+      "service_name": "filesystem",
+      "status": "available",
+      "tests_passed": 1,
+      "tests_total": 1,
+      "errors": [],
+      "warnings": [],
+      "timestamp": 1759550417.90962
+    },
+    {
+      "service_name": "git",
+      "status": "available",
+      "tests_passed": 1,
+      "tests_total": 1,
+      "errors": [],
+      "warnings": [],
+      "timestamp": 1759550417.918729
+    },
+    {
+      "service_name": "fetch",
+      "status": "available",
+      "tests_passed": 1,
+      "tests_total": 1,
+      "errors": [],
+      "warnings": [],
+      "timestamp": 1759550417.9187489
+    },
+    {
+      "service_name": "task-master",
+      "status": "available",
+      "tests_passed": 1,
+      "tests_total": 1,
+      "errors": [],
+      "warnings": [],
+      "timestamp": 1759550417.918755
+    },
+    {
+      "service_name": "sequential-thinking",
+      "status": "available",
+      "tests_passed": 1,
+      "tests_total": 1,
+      "errors": [],
+      "warnings": [],
+      "timestamp": 1759550417.918758
+    },
+    {
+      "service_name": "http-mcp",
+      "status": "available",
+      "tests_passed": 1,
+      "tests_total": 1,
+      "errors": [],
+      "warnings": [],
+      "timestamp": 1759550417.918762
+    },
+    {
+      "service_name": "podman",
+      "status": "available",
+      "tests_passed": 1,
+      "tests_total": 1,
+      "errors": [],
+      "warnings": [],
+      "timestamp": 1759550417.918766
+    },
+    {
+      "service_name": "redis",
+      "status": "unavailable",
+      "tests_passed": 1,
+      "tests_total": 1,
+      "errors": [],
+      "warnings": [
+        "Redis not available - using mock mode for state management"
+      ],
+      "timestamp": 1759550417.918772
+    }
+  ],
+  "environment": {
+    "platform": "darwin",
+    "python_version": "3.13.7 (main, Aug 14 2025, 11:12:11) [Clang 17.0.0 (clang-1700.0.13.3)]",
+    "working_directory": "/Users/aurai-cg/Desktop/PZG-SMG/AIR/M5S13"
+  }
+}
