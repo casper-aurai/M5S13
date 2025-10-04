@@ -198,6 +198,52 @@ class GithubMCP(MCPServer):
         )
         self.register_tool(
             Tool(
+                "github.update_issue",
+                "Update fields on an existing GitHub issue (title, body, labels, and state).",
+                {
+                    "type": "object",
+                    "properties": {
+                        "number": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Issue number to update.",
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Optional new title for the issue.",
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Optional new markdown body for the issue.",
+                        },
+                        "add_labels": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Labels to add to the issue (ensured to exist first).",
+                        },
+                        "remove_labels": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Labels to remove from the issue if present.",
+                        },
+                        "state": {
+                            "type": "string",
+                            "enum": ["open", "closed"],
+                            "description": "Optional state transition for the issue.",
+                        },
+                        "repo": {
+                            "type": "string",
+                            "description": "Optional owner/repo override. Defaults to the configured repository.",
+                        },
+                    },
+                    "required": ["number"],
+                    "additionalProperties": False,
+                },
+                self.update_issue,
+            )
+        )
+        self.register_tool(
+            Tool(
                 "github.close_issue",
                 "Close an existing GitHub issue with the provided reason.",
                 {
@@ -292,6 +338,53 @@ class GithubMCP(MCPServer):
 
         _run(f'gh issue comment {number} --repo "{repo}" --body {shlex.quote(body)}')
         return {"repo": repo, "number": number, "commented": True}
+
+    async def update_issue(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Update core fields on an existing GitHub issue."""
+
+        _assert_gh_auth()
+
+        number = params["number"]
+        repo = _require_repo(params.get("repo"))
+        title = params.get("title")
+        body = params.get("body")
+        add_labels = params.get("add_labels", []) or []
+        remove_labels = params.get("remove_labels", []) or []
+        state = params.get("state")
+
+        if add_labels:
+            self._ensure_label_state(repo, add_labels)
+
+        command = f'gh issue edit {number} --repo "{repo}"'
+
+        if title:
+            command += f' --title {shlex.quote(title)}'
+        if body:
+            command += f' --body {shlex.quote(body)}'
+        for label in add_labels:
+            command += f' --add-label "{label}"'
+        for label in remove_labels:
+            command += f' --remove-label "{label}"'
+        if state:
+            command += f' --state {shlex.quote(state)}'
+
+        if command.endswith(f'--repo "{repo}"'):
+            return {
+                "repo": repo,
+                "number": number,
+                "updated": False,
+                "message": "No update parameters provided",
+            }
+
+        _run(command)
+        result: Dict[str, Any] = {"repo": repo, "number": number, "updated": True}
+        if state:
+            result["state"] = state
+        if add_labels:
+            result["added"] = add_labels
+        if remove_labels:
+            result["removed"] = remove_labels
+        return result
 
     async def close_issue(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Close an issue with the provided reason."""

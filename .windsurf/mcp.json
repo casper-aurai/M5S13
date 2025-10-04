@@ -60,6 +60,7 @@
       "tools": [
         "github.ensure_labels",
         "github.create_issue",
+        "github.update_issue",
         "github.comment_issue",
         "github.close_issue"
       ]

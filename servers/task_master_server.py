@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+import shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -44,6 +45,11 @@ try:
 except ImportError:
     # For standalone execution
     from base_mcp_server import MCPError, MCPServer, Tool
+
+try:  # Optional GitHub tooling helper
+    from . import github_mcp  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency for offline tests
+    github_mcp = None  # type: ignore
 
 
 class Task:
@@ -438,6 +444,7 @@ class TaskMasterMCPServer(MCPServer):
         self.database = TaskDatabase(db_path)  # Initialize the database
         self.cascade_rules = self._load_cascade_rules()
         self._init_database()
+        self._github_helper: Optional["github_mcp.GithubMCP"] = None if github_mcp else None
 
     def _init_database(self):
         """Additional database initialization if needed."""
@@ -485,6 +492,244 @@ class TaskMasterMCPServer(MCPServer):
 
         return bool(requested_flag)
 
+    def _github_repo(self) -> Optional[str]:
+        """Return the configured GitHub repository if available."""
+
+        repo = self.repo_config.get("default_repo")
+        if isinstance(repo, str) and repo:
+            return repo
+
+        env_repo = os.getenv("MCP_GITHUB_DEFAULT_REPO")
+        if env_repo:
+            return env_repo
+
+        return None
+
+    def _github_default_labels(self) -> List[str]:
+        """Return default labels configured for GitHub issues."""
+
+        labels = self.repo_config.get("default_labels", [])
+        if not isinstance(labels, list):
+            return []
+        return [str(label) for label in labels if isinstance(label, str) and label]
+
+    def _github_cli_ready(self) -> bool:
+        """Check whether GitHub CLI interactions are possible."""
+
+        if github_mcp is None:
+            return False
+
+        repo = self._github_repo()
+        if not repo:
+            self.logger.debug("GitHub automation skipped: no default repository configured")
+            return False
+
+        try:
+            github_mcp._assert_gh_auth()
+        except Exception as exc:  # pragma: no cover - relies on gh CLI
+            self.logger.warning("GitHub CLI authentication missing: %s", exc)
+            return False
+
+        return True
+
+    def _get_github_helper(self) -> Optional["github_mcp.GithubMCP"]:
+        """Return a lazily initialized GitHub MCP helper."""
+
+        if github_mcp is None:
+            return None
+
+        if self._github_helper is None:
+            self._github_helper = github_mcp.GithubMCP()
+
+        return self._github_helper
+
+    def _ensure_github_labels(self, repo: str, labels: List[str]) -> None:
+        """Ensure labels exist on the remote repository."""
+
+        if not labels or github_mcp is None:
+            return
+
+        helper = self._get_github_helper()
+        if helper is None:
+            return
+
+        try:
+            helper._ensure_label_state(repo, labels)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            self.logger.warning("Failed to ensure GitHub labels %s: %s", labels, exc)
+
+    def _safe_run_github(self, command: str, context: str) -> Optional[subprocess.CompletedProcess]:
+        """Execute a GitHub CLI command safely, logging failures."""
+
+        if github_mcp is None:
+            return None
+
+        try:
+            return github_mcp._run(command)
+        except Exception as exc:  # pragma: no cover - requires gh CLI
+            self.logger.warning("GitHub %s command failed: %s", context, exc)
+            return None
+
+    def _render_issue_body(self, task: "Task") -> str:
+        """Render a markdown body for the GitHub issue."""
+
+        description = task.description.strip() if task.description else "_No description provided._"
+        lines = [description, "", "## Task Metadata", f"- Task ID: `{task.id}`"]
+
+        if task.component:
+            lines.append(f"- Component: `{task.component}`")
+        lines.append(f"- Status: `{task.status}`")
+        lines.append(f"- Priority: `{task.priority}`")
+        if task.labels:
+            labels = ", ".join(sorted({label for label in task.labels if label}))
+            if labels:
+                lines.append(f"- Labels: {labels}")
+
+        return "\n".join(lines)
+
+    def _create_remote_issue_for_task(self, task: "Task") -> Optional[Dict[str, Any]]:
+        """Create (or reuse) a GitHub issue for the given task."""
+
+        if not task.create_remote_issue or github_mcp is None:
+            return None
+
+        metadata = task.metadata.setdefault("github", {})
+        if metadata.get("issue_number"):
+            return metadata
+
+        if not self._github_cli_ready():
+            return None
+
+        repo = self._github_repo()
+        if not repo:
+            return None
+
+        labels = sorted(set((task.labels or []) + self._github_default_labels()))
+        if labels:
+            self._ensure_github_labels(repo, labels)
+
+        title = task.title
+        body = self._render_issue_body(task)
+
+        existing_number: Optional[int] = None
+        try:
+            existing_number = github_mcp._search_issue_by_title(repo, title)
+        except Exception:
+            existing_number = None
+
+        reused = False
+        issue_url = ""
+        issue_number: Optional[int] = None
+
+        if existing_number:
+            reused = True
+            issue_number = existing_number
+            issue_url = f"https://github.com/{repo}/issues/{existing_number}"
+        else:
+            command = f'gh issue create --repo "{repo}" --title {shlex.quote(title)} --body {shlex.quote(body)}'
+            for label in labels:
+                command += f' --label "{label}"'
+
+            proc = self._safe_run_github(command, "issue create")
+            if proc is None or not proc.stdout:
+                return None
+
+            issue_url = proc.stdout.strip().splitlines()[-1]
+            try:
+                issue_number = int(issue_url.rstrip("/").split("/")[-1])
+            except (ValueError, IndexError):  # pragma: no cover - defensive
+                self.logger.warning("Unable to parse issue number from %s", issue_url)
+                return None
+
+        metadata.update(
+            {
+                "repo": repo,
+                "issue_number": issue_number,
+                "issue_url": issue_url,
+                "reused": reused,
+                "labels": labels,
+                "last_sync": datetime.utcnow().isoformat(),
+            }
+        )
+
+        self.database.save_task(task)
+        return metadata
+
+    def _sync_remote_issue_on_update(
+        self,
+        task: "Task",
+        old_status: Optional[str],
+        status_changed: bool,
+        title_changed: bool,
+        description_changed: bool,
+    ) -> None:
+        """Update remote GitHub issue when task metadata changes."""
+
+        if github_mcp is None or not task.create_remote_issue:
+            return
+
+        metadata = task.metadata.get("github") or self._create_remote_issue_for_task(task)
+        if not metadata or not metadata.get("issue_number"):
+            return
+
+        repo = metadata.get("repo") or self._github_repo()
+        issue_number = metadata.get("issue_number")
+        if not repo or not issue_number:
+            return
+
+        base_command = f'gh issue edit {issue_number} --repo "{repo}"'
+        command = base_command
+
+        if title_changed:
+            command += f' --title {shlex.quote(task.title)}'
+        if description_changed:
+            command += f' --body {shlex.quote(self._render_issue_body(task))}'
+
+        current_labels = sorted({label for label in (task.labels or []) if label})
+        previous_labels = sorted({label for label in metadata.get("labels", []) if label})
+        labels_added = sorted(set(current_labels) - set(previous_labels))
+        labels_removed = sorted(set(previous_labels) - set(current_labels))
+
+        if labels_added:
+            self._ensure_github_labels(repo, labels_added)
+            for label in labels_added:
+                command += f' --add-label "{label}"'
+        if labels_removed:
+            for label in labels_removed:
+                command += f' --remove-label "{label}"'
+
+        if command != base_command:
+            self._safe_run_github(command, "issue edit")
+            metadata["labels"] = current_labels
+
+        if status_changed:
+            comment_lines = [
+                f"Task status changed from **{old_status or 'unknown'}** to **{task.status}**",
+                f"Timestamp: {datetime.utcnow().isoformat()}Z",
+            ]
+            comment = "\n\n".join(comment_lines)
+            self._safe_run_github(
+                f'gh issue comment {issue_number} --repo "{repo}" --body {shlex.quote(comment)}',
+                "issue comment",
+            )
+
+            if task.status == "completed":
+                self._safe_run_github(
+                    f'gh issue close {issue_number} --repo "{repo}" --reason completed',
+                    "issue close",
+                )
+                metadata["closed_at"] = datetime.utcnow().isoformat()
+            elif old_status == "completed":
+                self._safe_run_github(
+                    f'gh issue reopen {issue_number} --repo "{repo}"',
+                    "issue reopen",
+                )
+                metadata.pop("closed_at", None)
+
+            metadata["last_status"] = task.status
+
+        metadata["last_sync"] = datetime.utcnow().isoformat()
+        self.database.save_task(task)
     def _load_cascade_rules(self) -> List[Dict[str, Any]]:
         """Load cascade rules from YAML configuration."""
         if yaml is None:
@@ -973,11 +1218,24 @@ class TaskMasterMCPServer(MCPServer):
             # Save generated tasks to database
             self.database.save_task(generated_task)
 
+        if task.create_remote_issue:
+            self._create_remote_issue_for_task(task)
+
+        for generated_task in generated_tasks:
+            if generated_task.create_remote_issue:
+                self._create_remote_issue_for_task(generated_task)
+
+        persisted_task = self.database.get_task(task.id) or task
+        persisted_cascades: List[Task] = []
+        for generated_task in generated_tasks:
+            persisted = self.database.get_task(generated_task.id) or generated_task
+            persisted_cascades.append(persisted)
+
         return {
             "created": True,
-            "task": task.to_dict(),
+            "task": persisted_task.to_dict(),
             "cascade_generated": len(generated_tasks),
-            "cascade_tasks": [t.to_dict() for t in generated_tasks]
+            "cascade_tasks": [t.to_dict() for t in persisted_cascades]
         }
 
     async def task_get(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -1001,6 +1259,10 @@ class TaskMasterMCPServer(MCPServer):
             raise MCPError("TASK_NOT_FOUND", f"Task not found: {task_id}")
 
         requested_remote_issue = params.get("create_remote_issue", task.create_remote_issue)
+
+        old_title = task.title
+        old_description = task.description
+        old_status = task.status
 
         # Update fields if provided
         if "title" in params:
@@ -1036,9 +1298,24 @@ class TaskMasterMCPServer(MCPServer):
         if not self.database.save_task(task):
             raise MCPError("DATABASE_ERROR", "Failed to update task")
 
+        status_changed = "status" in params and params["status"] != old_status
+        title_changed = "title" in params and params["title"] != old_title
+        description_changed = "description" in params and params["description"] != old_description
+
+        if task.create_remote_issue:
+            self._sync_remote_issue_on_update(
+                task,
+                old_status,
+                status_changed,
+                title_changed,
+                description_changed,
+            )
+
+        persisted_task = self.database.get_task(task.id) or task
+
         return {
             "updated": True,
-            "task": task.to_dict()
+            "task": persisted_task.to_dict()
         }
 
     async def task_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
