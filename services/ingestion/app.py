@@ -116,18 +116,25 @@ class IngestionService:
 
             logger.info(f"Trigger {trigger_id} received")
 
-            # Simulate some processing
-            await asyncio.sleep(0.1)
+            # Publish to Kafka repos.ingested topic
+            message = {
+                "repo": data.get("repo", "unknown"),
+                "ref": data.get("ref", "main"),
+                "path": data.get("path", "/data"),
+                "ts": self.last_trigger.isoformat()
+            }
 
-            # In a real implementation, this would:
-            # 1. Parse the trigger data
-            # 2. Send message to Kafka
-            # 3. Update status
+            # Send to Kafka
+            future = self.kafka_producer.send('repos.ingested', value=message, key=message["repo"])
+            # Wait for the message to be sent
+            record_metadata = future.get(timeout=10)
+            logger.info(f"Message sent to repos.ingested topic: {record_metadata.topic} partition {record_metadata.partition} offset {record_metadata.offset}")
 
             return web.json_response({
                 "status": "success",
                 "trigger_id": trigger_id,
                 "message": "Ingestion triggered successfully",
+                "kafka_message_sent": True,
                 "timestamp": self.last_trigger.isoformat(),
                 "data_received": bool(data),
                 "total_triggers": self.triggers_count
