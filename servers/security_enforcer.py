@@ -17,7 +17,7 @@ import logging
 from pathlib import PurePosixPath
 import json
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Any, Optional
 from functools import wraps
 
@@ -379,3 +379,35 @@ except ImportError:
             self.code = code
             self.message = message
             super().__init__(message)
+
+
+_CFG_PATH = Path(".windsurf/github-repo.json")
+
+
+def _enforce_remote_issues_enabled() -> bool:
+    """Return True when the GitHub-first issue policy is enabled."""
+    try:
+        cfg = json.loads(_CFG_PATH.read_text())
+        return bool(cfg.get("enforce_remote_issues", True))
+    except Exception:
+        # Safe default: enforce unless explicitly disabled
+        return True
+
+
+def deny_local_markdown_for_issues(intent: str, target_path: str) -> Optional[str]:
+    """Return a denial message when issue-like writes target local markdown."""
+    if not _enforce_remote_issues_enabled():
+        return None
+
+    lowered_intent = (intent or "").lower()
+    if "issue" not in lowered_intent:
+        return None
+
+    candidate_path = PurePosixPath(target_path)
+    if str(candidate_path).startswith("docs/") and candidate_path.suffix.lower() in {".md", ".mdx"}:
+        return (
+            "Local markdown issue creation is disabled. "
+            "Use github.create_issue (GitHub-first policy)."
+        )
+
+    return None
