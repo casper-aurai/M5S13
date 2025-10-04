@@ -772,6 +772,9 @@ def html_to_markdown(html_text: str, src_path: str, custom_title: Optional[str])
     return final_doc
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]  # Get command line arguments when called as script
+
     p = argparse.ArgumentParser(
         description="Convert ChatGPT HTML export to Markdown with frontmatter.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
