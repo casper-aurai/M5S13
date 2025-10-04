@@ -1,7 +1,7 @@
 {
   "summary": {
-    "timestamp": 1759607893.9676511,
-    "duration": 0.0796658992767334,
+    "timestamp": 1759551029.484859,
+    "duration": 0.029139995574951172,
     "total_services": 8,
     "available_services": 7,
     "mock_services": 0,
@@ -18,7 +18,7 @@
       "tests_total": 1,
       "errors": [],
       "warnings": [],
-      "timestamp": 1759607894.0406752
+      "timestamp": 1759551029.503734
     },
     {
       "service_name": "git",
@@ -27,7 +27,7 @@
       "tests_total": 1,
       "errors": [],
       "warnings": [],
-      "timestamp": 1759607894.0472698
+      "timestamp": 1759551029.513943
     },
     {
       "service_name": "fetch",
@@ -36,7 +36,7 @@
       "tests_total": 1,
       "errors": [],
       "warnings": [],
-      "timestamp": 1759607894.047284
+      "timestamp": 1759551029.513959
     },
     {
       "service_name": "task-master",
@@ -45,7 +45,7 @@
       "tests_total": 1,
       "errors": [],
       "warnings": [],
-      "timestamp": 1759607894.04729
+      "timestamp": 1759551029.513972
     },
     {
       "service_name": "sequential-thinking",
@@ -54,7 +54,7 @@
       "tests_total": 1,
       "errors": [],
       "warnings": [],
-      "timestamp": 1759607894.0472908
+      "timestamp": 1759551029.513974
     },
     {
       "service_name": "http-mcp",
@@ -63,7 +63,7 @@
       "tests_total": 1,
       "errors": [],
       "warnings": [],
-      "timestamp": 1759607894.047296
+      "timestamp": 1759551029.513977
     },
     {
       "service_name": "podman",
@@ -72,7 +72,7 @@
       "tests_total": 1,
       "errors": [],
       "warnings": [],
-      "timestamp": 1759607894.0472991
+      "timestamp": 1759551029.51398
     },
     {
       "service_name": "redis",
@@ -83,7 +83,7 @@
       "warnings": [
         "Redis not available - using mock mode for state management"
       ],
-      "timestamp": 1759607894.047307
+      "timestamp": 1759551029.513987
     }
   ],
   "environment": {

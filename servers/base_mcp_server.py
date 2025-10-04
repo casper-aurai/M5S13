@@ -17,9 +17,12 @@ import os
 import sys
 import traceback
 import uuid
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Callable
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
 
 # Configure logging
@@ -70,8 +73,19 @@ class MCPServer(ABC):
         self.running = False
 
         # Transport configuration
-        self.transport_type = None  # "stdio" or "websocket"
+        self.transport_type = None  # "stdio", "websocket", or "http"
         self.websocket_port = None
+        self.http_port = 8080  # Default HTTP port for health/metrics
+
+        # Metrics tracking
+        self.start_time = time.time()
+        self.request_count = 0
+        self.error_count = 0
+        self.session_count = 0
+
+        # HTTP server
+        self.http_server = None
+        self.http_server_thread = None
 
         logger.info(f"Initializing MCP server: {server_name} v{server_version}")
 
@@ -97,44 +111,95 @@ class MCPServer(ABC):
 
     async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle an incoming JSON-RPC request."""
+        self.request_count += 1
+
         try:
-            # Validate request structure
-            if not isinstance(request, dict):
-                raise MCPError("INVALID_REQUEST", "Request must be a JSON object")
-
+            # Handle health check requests
             method = request.get("method")
-            if not method:
-                raise MCPError("INVALID_REQUEST", "Request missing 'method' field")
+            if method == "health":
+                return self._create_health_response(request.get("id"))
 
-            params = request.get("params", {})
-            request_id = request.get("id")
+            # Handle metrics requests
+            if method == "metrics":
+                return self._create_metrics_response(request.get("id"))
 
-            logger.info(f"Handling request: {method}")
+            # Handle standard MCP requests
+            request_id = request.get("id", str(uuid.uuid4()))
+            result = await self._execute_request(request)
+            self.session_count = len(self.sessions)
 
-            # Handle system methods
-            if method == "initialize":
-                return await self._handle_initialize(params, request_id)
-            elif method == "tools/list":
-                return await self._handle_tools_list(request_id)
-            elif method == "tools/call":
-                return await self._handle_tools_call(params, request_id)
-            elif method == "ping":
-                return await self._handle_ping(request_id)
-            else:
-                # Handle tool execution
-                return await self._execute_tool(method, params, request_id)
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": result
+            }
 
-        except MCPError as e:
-            logger.error(f"MCP error in {request.get('method', 'unknown')}: {e.message}")
-            return self._create_error_response(e.code, e.message, e.data, request.get("id"))
         except Exception as e:
-            logger.error(f"Unexpected error: {str(e)}", exc_info=True)
-            return self._create_error_response(
-                "INTERNAL_ERROR",
-                f"Internal server error: {str(e)}",
-                None,
-                request.get("id")
-            )
+            self.error_count += 1
+            logger.error(f"Error handling request: {str(e)}", exc_info=True)
+            request_id = request.get("id", str(uuid.uuid4()))
+            return self._create_error_response("REQUEST_ERROR", str(e), None, request_id)
+
+    def _create_health_response(self, request_id: str) -> Dict[str, Any]:
+        """Create a health check response."""
+        uptime = time.time() - self.start_time
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "status": "healthy",
+                "timestamp": datetime.utcnow().isoformat(),
+                "uptime_seconds": uptime,
+                "version": self.server_version,
+                "server_name": self.server_name
+            }
+        }
+
+    def _create_metrics_response(self, request_id: str) -> Dict[str, Any]:
+        """Create a metrics response."""
+        uptime = time.time() - self.start_time
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "uptime_seconds": uptime,
+                "total_requests": self.request_count,
+                "total_errors": self.error_count,
+                "active_sessions": len(self.sessions),
+                "registered_tools": len(self.tools),
+                "server_name": self.server_name,
+                "version": self.server_version,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        }
+
+    async def _execute_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a standard MCP request."""
+        # Validate request structure
+        if not isinstance(request, dict):
+            raise MCPError("INVALID_REQUEST", "Request must be a JSON object")
+
+        method = request.get("method")
+        if not method:
+            raise MCPError("INVALID_REQUEST", "Request missing 'method' field")
+
+        params = request.get("params", {})
+        request_id = request.get("id")
+
+        logger.info(f"Handling request: {method}")
+
+        # Handle system methods
+        if method == "initialize":
+            return await self._handle_initialize(params, request_id)
+        elif method == "tools/list":
+            return await self._handle_tools_list(request_id)
+        elif method == "tools/call":
+            return await self._handle_tools_call(params, request_id)
+        elif method == "ping":
+            return await self._handle_ping(request_id)
+        else:
+            # Handle tool execution
+            return await self._execute_tool(method, params, request_id)
 
     async def _handle_initialize(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         """Handle server initialization."""
@@ -264,8 +329,12 @@ class MCPServer(ABC):
             await self._start_stdio_transport()
         elif self.transport_type == "websocket":
             await self._start_websocket_transport()
+        elif self.transport_type == "http":
+            # Start HTTP server in background and stdio transport
+            self._start_http_server()
+            await self._start_stdio_transport()
         else:
-            raise MCPError("INVALID_CONFIG", "Transport type must be 'stdio' or 'websocket'")
+            raise MCPError("INVALID_CONFIG", "Transport type must be 'stdio', 'websocket', or 'http'")
 
     async def _start_stdio_transport(self):
         """Start stdio transport."""
@@ -348,3 +417,81 @@ class MCPServer(ABC):
         """Stop the MCP server."""
         logger.info(f"Stopping MCP server: {self.server_name}")
         self.running = False
+
+        # Stop HTTP server if running
+        self.stop_http_server()
+
+    def _start_http_server(self):
+        """Start HTTP server for health and metrics endpoints."""
+        def handler_factory(*args, **kwargs):
+            return HealthMetricsHandler(self, *args, **kwargs)
+
+        self.http_server = HTTPServer(("localhost", self.http_port), handler_factory)
+        self.http_server_thread = threading.Thread(target=self.http_server.serve_forever, daemon=True)
+        self.http_server_thread.start()
+        logger.info(f"HTTP server started on http://localhost:{self.http_port}")
+
+    def stop_http_server(self):
+        """Stop HTTP server."""
+        if self.http_server:
+            self.http_server.shutdown()
+            self.http_server.server_close()
+            logger.info("HTTP server stopped")
+
+
+class HealthMetricsHandler(BaseHTTPRequestHandler):
+    """HTTP handler for health and metrics endpoints."""
+
+    def __init__(self, server_instance, *args, **kwargs):
+        self.server_instance = server_instance
+        super().__init__(*args, **kwargs)
+
+    def do_GET(self):
+        """Handle GET requests for health and metrics."""
+        if self.path == "/health":
+            self._handle_health()
+        elif self.path == "/metrics":
+            self._handle_metrics()
+        else:
+            self.send_error(404, "Not Found")
+
+    def _handle_health(self):
+        """Handle health check requests."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+
+        uptime = time.time() - self.server_instance.start_time
+        health_data = {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "uptime_seconds": uptime,
+            "version": self.server_instance.server_version,
+            "server_name": self.server_instance.server_name
+        }
+
+        self.wfile.write(json.dumps(health_data, indent=2).encode())
+
+    def _handle_metrics(self):
+        """Handle metrics requests."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+
+        uptime = time.time() - self.server_instance.start_time
+        metrics_data = {
+            "uptime_seconds": uptime,
+            "total_requests": self.server_instance.request_count,
+            "total_errors": self.server_instance.error_count,
+            "active_sessions": len(self.server_instance.sessions),
+            "registered_tools": len(self.server_instance.tools),
+            "server_name": self.server_instance.server_name,
+            "version": self.server_instance.server_version,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        self.wfile.write(json.dumps(metrics_data, indent=2).encode())
+
+    def log_message(self, format, *args):
+        """Suppress HTTP request logging."""
+        pass

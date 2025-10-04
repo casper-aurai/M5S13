@@ -39,11 +39,12 @@
 - **Service Integration**: Test service-to-service communication for new endpoints
 - **Documentation Verification**: Ensure all documented commands and endpoints work
 
-## Code Quality Rules
-- **Linting**: Run relevant linters before committing code changes
-- **Error Handling**: Implement proper error handling and logging in all services
-- **Resource Cleanup**: Ensure proper resource cleanup in all services
-- **Security Headers**: Include appropriate security headers in HTTP services
+## MCP Server Rules
+- **Server Validation**: All MCP servers must pass the validation script before deployment
+- **Health Endpoints**: Every MCP server must expose /health and /metrics endpoints
+- **Container Operations**: Use the Podman MCP Server for all container management operations instead of direct podman/docker commands
+- **State Management**: Use the Redis MCP Server for ephemeral agent state storage and inter-agent coordination
+- **Test Coverage**: All MCP servers must have automated test suites
 
 ## Review and Merge Rules
 - **Self-Review**: Authors should review their own changes before requesting review
