@@ -34,14 +34,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class IngestionService:
-    """Ingestion service stub."""
+    """Ingestion service with Kafka integration."""
 
     def __init__(self):
         self.app = web.Application()
         self.triggers_count = 0
         self.last_trigger = None
         self.start_time = time.time()
-
+        
+        # Kafka configuration
+        kafka_brokers = os.getenv('KAFKA_BROKERS', 'localhost:9092')
+        self.kafka_producer = kafka.KafkaProducer(
+            bootstrap_servers=[kafka_brokers],
+            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+            key_serializer=lambda k: k.encode('utf-8') if k else None,
+            acks='all',
+            retries=3
+        )
+        
         # Setup routes
         self.app.router.add_get('/health', self.health)
         self.app.router.add_get('/metrics', self.metrics)
