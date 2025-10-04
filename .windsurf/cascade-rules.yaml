@@ -278,21 +278,53 @@ cascadeRules:
         config.enforce_remote_issues: true
       message: "Local markdown issue creation is disabled. Use github.create_issue."
 
-  - name: "Wave-2 Work Items → GitHub"
+# --- NEW: GitHub Issue Automation Rules ---
+
+  - name: "Auto-Close Completed Tasks with GitHub Issues"
+    trigger:
+      whenTool: "task-master.task_complete"
+      condition:
+        descriptionContains: "github"
+    actions:
+      - tool: "github.comment_issue"
+        with:
+          number: 15
+          body: "✅ **TASK COMPLETED**\n\nTask marked as complete. Closing associated GitHub issue."
+      - tool: "github.close_issue"
+        with:
+          number: 15
+          reason: "completed"
+    labels: ["automation", "github-sync"]
+
+  - name: "Auto-Update Issue Progress for Wave2 Tasks"
+    trigger:
+      whenTool: "task-master.task_update"
+      condition:
+        labelsAnyOf: ["wave2-poc", "p1-high", "ready-for-dev"]
+        descriptionContains: "progress"
+    actions:
+      - tool: "github.comment_issue"
+        with:
+          number: 15
+          body: "🔄 **PROGRESS UPDATE**\n\nTask status updated. Wave2 development in progress."
+    labels: ["automation", "github-sync"]
+
+  - name: "Auto-Create GitHub Issue for New Wave2 Tasks"
     trigger:
       whenTool: "task-master.task_create"
       condition:
-        labelsAnyOf: ["kafka","weaviate","reporting","airflow","observability","dx","dgraph","storage","deployment","data-flow","architecture"]
+        labelsAnyOf: ["wave2-poc", "p1-high", "ready-for-dev"]
     pre:
       - tool: "github.ensure_labels"
         with:
-          labels: ["wave2-poc","p1-high","ready-for-dev"]
+          labels: ["wave2-poc", "ready-for-dev", "automation"]
     actions:
       - tool: "github.create_issue"
         with:
-          title: "${task.title}"
-          body: "${task.description}"
-          labels: ["wave2-poc","ready-for-dev"]
+          title: "Auto: ${task.title}"
+          body: "${task.description}\n\n*Auto-created by cascade rules for Wave2 development.*"
+          labels: ["wave2-poc", "ready-for-dev", "automation"]
+    labels: ["automation", "github-sync"]
 
 # --- global config stays as-is ---
 globalConfig:
