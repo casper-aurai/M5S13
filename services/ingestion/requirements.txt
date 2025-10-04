@@ -1,0 +1,4 @@
+aiohttp==3.9.1
+kafka-python==2.0.2
+pydantic==2.5.0
+structlog==23.2.0

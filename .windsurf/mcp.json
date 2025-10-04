@@ -1,0 +1,63 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/filesystem_server.py"],
+      "env": {
+        "MCP_FS_ROOT": "${workspaceFolder}",
+        "MCP_FS_READONLY": "false"
+      }
+    },
+    "git": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/git_server.py"],
+      "env": {
+        "MCP_GIT_ROOT": "${workspaceFolder}"
+      }
+    },
+    "redis": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/redis_server.py"],
+      "env": {
+        "REDIS_URL": "redis://localhost:6379",
+        "REDIS_DB": "1"
+      }
+    },
+    "fetch": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/fetch_server.py"],
+      "env": {
+        "FETCH_WHITELIST": "127.0.0.1:8080,127.0.0.1:3000,localhost:891*"
+      }
+    },
+    "podman": {
+      "transport": "websocket",
+      "url": "ws://127.0.0.1:8913"
+    },
+    "sequential-thinking": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/sequential_thinking_server.py"]
+    },
+    "task-master": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/task_master_server.py"],
+      "env": {
+        "TASK_DB_PATH": "${workspaceFolder}/data/tasks.db"
+      }
+    },
+    "http-mcp": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/http_mcp_server.py"],
+      "env": {
+        "HTTP_MCP_WHITELIST": "127.0.0.1,localhost,0.0.0.0"
+      }
+    }
+  }
+}
