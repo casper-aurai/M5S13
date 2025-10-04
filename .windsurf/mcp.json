@@ -62,6 +62,8 @@
         "Request timeout and size limits",
         "SSL/TLS validation required"
       ]
+      "mockAvailable": true,
+      "mockDescription": "Container operations disabled - use 'make podman-init' to enable"
     },
     "podman": {
       "transport": "websocket",
@@ -78,9 +80,35 @@
         "No access to host processes",
         "Container/project isolation",
         "Resource limits and monitoring"
-      ]
+      ],
+      "optional": true,
+      "mockAvailable": true,
+      "mockDescription": "Container operations disabled - use 'make podman-init' to enable"
     },
-    "sequential-thinking": {
+    "redis": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/servers/redis_server.py"],
+      "env": {
+        "REDIS_URL": "redis://localhost:6379",
+        "REDIS_DB": "1"
+      },
+      "permittedTools": [
+        "redis_get", "redis_set", "redis_del", "redis_keys", "redis_ttl",
+        "redis_lpush", "redis_rpush", "redis_lpop", "redis_hset", "redis_hget", "redis_hgetall",
+        "redis_session_create", "redis_session_get", "redis_session_update", "redis_session_delete"
+      ],
+      "sandboxConstraints": [
+        "Only for ephemeral agent state, not business data",
+        "Connection pooling and limits",
+        "Session TTL enforcement",
+        "No access to production Redis instances"
+      ],
+      "optional": true,
+      "mockAvailable": true,
+      "mockDescription": "State management disabled - use 'make dev-redis' to enable"
+    },
+    "fetch": {
       "transport": "stdio",
       "command": "python",
       "args": ["${workspaceFolder}/servers/sequential_thinking_server.py"],

@@ -16,7 +16,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
-from base_mcp_server import MCPServer, MCPError, Tool
+try:
+    from .base_mcp_server import MCPServer, MCPError, Tool
+except ImportError:
+    # For standalone execution
+    from base_mcp_server import MCPServer, MCPError, Tool
 
 
 class GitMCPServer(MCPServer):

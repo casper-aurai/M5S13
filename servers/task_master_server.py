@@ -6,57 +6,61 @@ Provides task and issue management capabilities.
 Implements stdio and WebSocket transport layers.
 """
 
-import asyncio
-import json
-import logging
-import os
-import re
-import sqlite3
-import sys
+import subprocess
+import threading
 import time
-import uuid
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple
 
-from base_mcp_server import MCPServer, MCPError, Tool
+try:
+    from .base_mcp_server import MCPServer, MCPError, Tool
+except ImportError:
+    # For standalone execution
+    from base_mcp_server import MCPServer, MCPError, Tool
 
 
 class Task:
     """Represents a task or issue."""
-
     def __init__(
         self,
         title: str,
         description: str,
         task_type: str = "task",
+        component: str = None,
         priority: str = "medium",
         status: str = "open",
         assignee: str = None,
         labels: List[str] = None,
         parent_id: str = None,
         project_id: str = None,
-        metadata: Dict[str, Any] = None
+        created_at: Optional[datetime] = None,
+        updated_at: Optional[datetime] = None,
+        completed_at: Optional[datetime] = None,
+        metadata: Dict[str, Any] = None,
+        depends_on: List[str] = None,
+        blocked_by: List[str] = None,
+        subtasks: List[str] = None,
     ):
+        """Initialize task."""
         self.id = str(uuid.uuid4())
         self.title = title
         self.description = description
-        self.task_type = task_type  # "task", "issue", "bug", "feature", "epic"
-        self.priority = priority  # "low", "medium", "high", "critical"
-        self.status = status  # "open", "in_progress", "completed", "cancelled"
+        self.type = task_type  # Use 'type' as the attribute name for consistency
+        self.component = component
+        self.priority = priority
+        self.status = status
         self.assignee = assignee
         self.labels = labels or []
-        self.parent_id = parent_id  # For subtasks/epics
+        self.parent_id = parent_id
         self.project_id = project_id
 
-        self.created_at = datetime.utcnow()
+        self.created_at = created_at or datetime.utcnow()
         self.updated_at = self.created_at
-        self.completed_at = None
+        self.completed_at = completed_at
 
         self.metadata = metadata or {}
-        self.depends_on: List[str] = []  # Task IDs this task depends on
-        self.blocked_by: List[str] = []  # Task IDs that block this task
-        self.subtasks: List[str] = []  # Child task IDs
+        self.depends_on = depends_on or []
+        self.blocked_by = blocked_by or []
+        self.subtasks = subtasks or []
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert task to dictionary representation."""
@@ -64,20 +68,21 @@ class Task:
             "id": self.id,
             "title": self.title,
             "description": self.description,
-            "type": self.task_type,
+            "type": self.type,
+            "component": self.component,
             "priority": self.priority,
             "status": self.status,
             "assignee": self.assignee,
             "labels": self.labels,
             "parent_id": self.parent_id,
             "project_id": self.project_id,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "metadata": self.metadata,
             "depends_on": self.depends_on,
             "blocked_by": self.blocked_by,
-            "subtasks": self.subtasks
+            "subtasks": self.subtasks,
         }
 
 
@@ -133,6 +138,7 @@ class TaskDatabase:
                     title TEXT NOT NULL,
                     description TEXT,
                     type TEXT DEFAULT 'task',
+                    component TEXT,
                     priority TEXT DEFAULT 'medium',
                     status TEXT DEFAULT 'open',
                     assignee TEXT,
@@ -173,15 +179,16 @@ class TaskDatabase:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute("""
                     INSERT OR REPLACE INTO tasks
-                    (id, title, description, type, priority, status, assignee, labels,
+                    (id, title, description, type, component, priority, status, assignee, labels,
                      parent_id, project_id, created_at, updated_at, completed_at, metadata,
                      depends_on, blocked_by, subtasks)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     task.id,
                     task.title,
                     task.description,
-                    task.task_type,
+                    task.type,
+                    getattr(task, 'component', None),
                     task.priority,
                     task.status,
                     task.assignee,
@@ -276,8 +283,6 @@ class TaskDatabase:
         except Exception as e:
             logging.error(f"Error deleting task: {e}")
             return False
-
-    def save_project(self, project: TaskProject) -> bool:
         """Save project to database."""
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -331,10 +336,22 @@ class TaskDatabase:
 
     def _row_to_task(self, row: sqlite3.Row) -> Task:
         """Convert database row to Task object."""
+        # Find the component field index
+        component_index = None
+        for i, col in enumerate(row.description):
+            if col[0] == 'component':
+                component_index = i
+                break
+
+        component_value = None
+        if component_index is not None and component_index < len(row):
+            component_value = row[component_index]
+
         task = Task(
             title=row["title"],
             description=row["description"],
             task_type=row["type"],
+            component=component_value,
             priority=row["priority"],
             status=row["status"],
             assignee=row["assignee"],
@@ -366,15 +383,145 @@ class TaskDatabase:
 
 
 class TaskMasterMCPServer(MCPServer):
-    """Task Master MCP Server implementation."""
+    """Task Master MCP Server implementation with cascade rules support."""
 
     def __init__(self, db_path: str = "./data/tasks.db"):
         super().__init__("task-master", "1.0.0")
 
-        self.db_path = db_path
-        self.database = TaskDatabase(db_path)
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.database = TaskDatabase(db_path)  # Initialize the database
+        self.cascade_rules = self._load_cascade_rules()
+        self._init_database()
 
-        logging.info(f"Task master server initialized with database: {db_path}")
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
+
+    def _init_database(self):
+        """Additional database initialization if needed."""
+        # The TaskDatabase class handles schema creation
+        pass
+
+    def _load_cascade_rules(self) -> List[Dict[str, Any]]:
+        """Load cascade rules from YAML configuration."""
+        try:
+            rules_path = Path.cwd() / ".windsurf" / "cascade-rules.yaml"
+            if rules_path.exists():
+                with open(rules_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                    return config.get('cascadeRules', [])
+            else:
+                self.logger.warning(f"Cascade rules not found at {rules_path}")
+                return []
+        except Exception as e:
+            self.logger.error(f"Failed to load cascade rules: {e}")
+            return []
+
+    def _check_cascade_rules(self, task: Task) -> List[Task]:
+        """Check if task creation should trigger cascade rules."""
+        generated_tasks = []
+
+        for rule in self.cascade_rules:
+            if self._matches_rule(task, rule):
+                self.logger.info(f"Task {task.id} matches cascade rule: {rule['name']}")
+                subtasks = self._generate_subtasks(task, rule)
+                generated_tasks.extend(subtasks)
+
+        return generated_tasks
+
+    def _matches_rule(self, task: Task, rule: Dict[str, Any]) -> bool:
+        """Check if a task matches a cascade rule."""
+        trigger = rule.get('trigger', {})
+
+        # Check tool match
+        if trigger.get('whenTool') != 'task-master.task_create':
+            return False
+
+        # Check condition
+        condition = trigger.get('condition', {})
+
+        # For service component, check if task type or title matches
+        if 'component' in condition:
+            component = condition['component']
+            if component == 'service':
+                # Check if task title contains "service" or if type is service
+                if 'service' not in task.title.lower() and task.type != 'service':
+                    return False
+            elif task.type != component:
+                return False
+
+        if 'descriptionContains' in condition:
+            if condition['descriptionContains'] not in task.description:
+                return False
+
+        return True
+
+    def _generate_subtasks(self, parent_task: Task, rule: Dict[str, Any]) -> List[Task]:
+        """Generate subtasks based on cascade rule."""
+        generated_tasks = []
+
+        for action in rule.get('actions', []):
+            if 'createTask' in action:
+                task_data = action['createTask']
+
+                # Interpolate variables
+                title = self._interpolate_variables(task_data.get('description', ''), parent_task)
+                description = title
+
+                # Create subtask
+                subtask = Task(
+                    title=title,
+                    description=description,
+                    task_type=task_data.get('component', 'task'),
+                    priority=task_data.get('priority', 'medium'),
+                    labels=task_data.get('labels', []),
+                    parent_id=parent_task.id,
+                    metadata={
+                        'cascade_generated': True,
+                        'cascade_rule': rule['name'],
+                        'parent_task': parent_task.id
+                    }
+                )
+
+                # Add dependency relationship
+                parent_task.subtasks.append(subtask.id)
+                subtask.depends_on.append(parent_task.id)
+
+                # Save to database
+                self._save_task(subtask)
+                generated_tasks.append(subtask)
+
+        return generated_tasks
+
+    def _interpolate_variables(self, template: str, task: Task) -> str:
+        """Interpolate variables in cascade rule templates."""
+        # Simple variable interpolation
+        return template.replace('${component}', task.component or 'unknown')
+
+    def _save_task(self, task: Task):
+        """Save task to database."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                INSERT OR REPLACE INTO tasks
+                (id, title, description, type, component, priority, status, assignee, labels,
+                 parent_id, project_id, created_at, updated_at, completed_at, metadata, depends_on, blocked_by, subtasks)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                task.id, task.title, task.description, task.type, task.component, task.priority,
+                task.status, task.assignee, json.dumps(task.labels),
+                task.parent_id, task.project_id, task.created_at.isoformat() if task.created_at else None,
+                task.updated_at.isoformat() if task.updated_at else None,
+                task.completed_at.isoformat() if task.completed_at else None,
+                json.dumps(task.metadata), json.dumps(task.depends_on),
+                json.dumps(task.blocked_by), json.dumps(task.subtasks)
+            ))
+
+            conn.commit()
+        finally:
+            conn.close()
 
     async def setup_tools(self):
         """Setup task management tools."""
@@ -631,10 +778,11 @@ class TaskMasterMCPServer(MCPServer):
         ))
 
     async def task_create(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new task."""
+        """Create a new task with cascade rule processing."""
         title = params["title"]
         description = params.get("description", "")
         task_type = params.get("type", "task")
+        component = params.get("component")
         priority = params.get("priority", "medium")
         assignee = params.get("assignee")
         labels = params.get("labels", [])
@@ -648,6 +796,7 @@ class TaskMasterMCPServer(MCPServer):
             title=title,
             description=description,
             task_type=task_type,
+            component=component,
             priority=priority,
             assignee=assignee,
             labels=labels,
@@ -679,9 +828,18 @@ class TaskMasterMCPServer(MCPServer):
         if not self.database.save_task(task):
             raise MCPError("DATABASE_ERROR", "Failed to save task")
 
+        # Check and apply cascade rules
+        generated_tasks = self._check_cascade_rules(task)
+        for generated_task in generated_tasks:
+            self.logger.info(f"Generated cascade task: {generated_task.title}")
+            # Save generated tasks to database
+            self.database.save_task(generated_task)
+
         return {
             "created": True,
-            "task": task.to_dict()
+            "task": task.to_dict(),
+            "cascade_generated": len(generated_tasks),
+            "cascade_tasks": [t.to_dict() for t in generated_tasks]
         }
 
     async def task_get(self, params: Dict[str, Any]) -> Dict[str, Any]:

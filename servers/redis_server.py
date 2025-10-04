@@ -19,7 +19,11 @@ try:
 except ImportError:
     redis = None
 
-from base_mcp_server import MCPServer, MCPError, Tool
+try:
+    from .base_mcp_server import MCPServer, MCPError, Tool
+except ImportError:
+    # For standalone execution
+    from base_mcp_server import MCPServer, MCPError, Tool
 
 
 class RedisMCPServer(MCPServer):

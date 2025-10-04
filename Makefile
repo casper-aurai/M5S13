@@ -127,8 +127,79 @@ test:
 	pytest servers/ -v
 
 # ========================================
-# DOCUMENTATION
+# MCP VALIDATION
 # ========================================
+
+validate:
+	@echo "Running MCP server validation..."
+	python scripts/validate_mcp.py
+
+validate-mcp:
+	@echo "Validating MCP server availability..."
+	python validate_mcp_servers.py
+
+# ========================================
+# DEVELOPMENT SERVICES
+# ========================================
+
+dev-redis:
+	@echo "Starting Redis for development..."
+	@if command -v podman >/dev/null 2>&1; then \
+		echo "Starting Redis container..."; \
+		podman run -d --name freshpoc-redis-dev -p 6379:6379 redis:7-alpine; \
+		@echo "Redis started on localhost:6379"; \
+	elif command -v docker >/dev/null 2>&1; then \
+		echo "Starting Redis container..."; \
+		docker run -d --name freshpoc-redis-dev -p 6379:6379 redis:7-alpine; \
+		@echo "Redis started on localhost:6379"; \
+	else \
+		echo "❌ Neither Podman nor Docker found. Please install container runtime."; \
+		@echo "💡 On macOS: brew install podman or brew install docker"; \
+		@echo "💡 On Linux: sudo apt install podman or sudo apt install docker.io"; \
+		false; \
+	fi
+
+podman-init:
+	@echo "Initializing Podman environment..."
+	@if ! command -v podman >/dev/null 2>&1; then \
+		echo "❌ Podman not found. Installing..."; \
+		@if command -v brew >/dev/null 2>&1; then \
+			brew install podman; \
+			podman machine init; \
+			podman machine start; \
+		elif command -v apt >/dev/null 2>&1; then \
+			sudo apt update && sudo apt install -y podman; \
+		else \
+			echo "💡 Please install Podman manually for your platform"; \
+			false; \
+		fi; \
+	fi; \
+	echo "✅ Podman is ready"
+
+validate-services:
+	@echo "Validating that required services are running..."
+	@echo "Checking Redis..."; \
+	if nc -z 127.0.0.1 6379 2>/dev/null; then \
+		echo "✅ Redis is running on 127.0.0.1:6379"; \
+	else \
+		echo "⚠️  Redis not detected - run 'make dev-redis' or start manually"; \
+	fi; \
+	echo "Checking Podman..."; \
+	if command -v podman >/dev/null 2>&1 && podman ps >/dev/null 2>&1; then \
+		echo "✅ Podman is available"; \
+	else \
+		echo "⚠️  Podman not available - run 'make podman-init' to set up"; \
+	fi
+
+clean-dev:
+	@echo "Cleaning up development services..."
+	@if command -v podman >/dev/null 2>&1; then \
+		podman stop freshpoc-redis-dev 2>/dev/null || true; \
+		podman rm freshpoc-redis-dev 2>/dev/null || true; \
+	elif command -v docker >/dev/null 2>&1; then \
+		docker stop freshpoc-redis-dev 2>/dev/null || true; \
+		docker rm freshpoc-redis-dev 2>/dev/null || true; \
+	fi
 
 docs:
 	@echo "Generating documentation..."

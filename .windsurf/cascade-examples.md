@@ -1,28 +1,29 @@
-# Example: Cascade Rule Outcomes for "service writer scaffold"
-# This demonstrates what happens when someone creates a task with:
-# component: "service"
-# description: "scaffold service-writer"
+# Cascade Rule Usage Examples
 
-## Original Task Created
+## Real-World Example: Writer Service Scaffolding
+
+### Scenario
+When a developer creates a task to scaffold a new service component:
+
+```json
+{
+  "title": "scaffold service-writer",
+  "description": "scaffold service-writer HTTP + Dockerfile + health/metrics",
+  "type": "service",
+  "component": "service",
+  "labels": ["scaffold", "service"]
+}
 ```
-Task ID: task_001
-Title: "scaffold service-writer"
-Component: "service"
-Description: "scaffold service-writer"
-Priority: "high"
-Status: "open"
-Assignee: "developer"
-Labels: ["service", "scaffold"]
-```
 
-## Cascade Rules Triggered
+### Cascade Rules Triggered
 
-### 1. Service Scaffold Cascade
+#### 1. Service Scaffold Cascade
 **Trigger Condition Met:**
-- `whenTool: "task-master.task_create"`
+- `whenTool: "task-master.task_create"` ✓
 - `condition.component: "service"` ✓
 
-**Actions Generated:**
+**Generated Tasks:**
+
 1. **Scaffold writer service**
    - Component: "writer"
    - Description: "Scaffold writer service (http skeleton, Dockerfile, health, metrics)"
@@ -47,143 +48,58 @@ Labels: ["service", "scaffold"]
    - Priority: "medium"
    - Labels: ["git", "branch", "commit"]
 
-## Generated Task Tree
+### Generated Task Tree
 
 ```
-📋 task_001 (Original)
-└── 🎯 scaffold service-writer
-    ├── 🔧 task_002: Scaffold writer service
-    │   ├── Component: "writer"
-    │   ├── Priority: "high"
-    │   └── Labels: ["scaffold", "service", "backend"]
-    ├── 📊 task_003: Add observability config
-    │   ├── Component: "observability"
-    │   ├── Priority: "high"
-    │   └── Labels: ["observability", "monitoring", "prometheus"]
-    ├── 📚 task_004: Generate documentation
-    │   ├── Component: "documentation"
-    │   ├── Priority: "medium"
-    │   └── Labels: ["documentation", "adr"]
-    └── 🔀 task_005: Create branch and commit
-        ├── Component: "git"
-        ├── Priority: "medium"
-        └── Labels: ["git", "branch", "commit"]
+📋 Original Task: scaffold service-writer
+└── 🎯 Service Scaffold Cascade (4 subtasks)
+    ├── 🔧 Writer Service Scaffolding
+    │   ├── HTTP skeleton with /health & /metrics endpoints
+    │   ├── Dockerfile with healthcheck
+    │   ├── requirements.txt with aiohttp & prometheus-client
+    │   └── services/writer/ directory structure
+    ├── 📊 Observability Configuration
+    │   ├── Prometheus scrape config for writer:8080/metrics
+    │   ├── Grafana dashboard panel for writer metrics
+    │   └── docker-compose.yml service definition
+    ├── 📚 Documentation Generation
+    │   ├── ADR document for writer service architecture
+    │   └── README.md updates with writer service info
+    └── 🔀 Git Workflow Setup
+        ├── feature/writer-scaffold branch creation
+        ├── Initial commit of service scaffolding
+        └── PR template with proper labels and ADR references
 ```
 
-## Dependencies and Execution Order
+### Files Created/Modified
 
-The cascade rules establish these dependencies:
-
-1. **task_002** (service scaffold) → **task_003** (observability)
-2. **task_003** (observability) → **task_004** (documentation)
-3. **task_004** (documentation) → **task_005** (git)
-
-**Execution Flow:**
+#### Service Scaffolding (`services/writer/`)
 ```
-task_001 (trigger) → task_002 → task_003 → task_004 → task_005
+services/writer/
+├── app.py           # HTTP service with /health & /metrics
+├── Dockerfile       # Multi-stage build with healthcheck
+└── requirements.txt # aiohttp, prometheus-client dependencies
 ```
 
-## Task Details
-
-### Task 002: Scaffold writer service
-```json
-{
-  "id": "task_002",
-  "title": "Scaffold writer service (http skeleton, Dockerfile, health, metrics)",
-  "component": "writer",
-  "type": "service",
-  "priority": "high",
-  "status": "open",
-  "assignee": "developer",
-  "labels": ["scaffold", "service", "backend"],
-  "depends_on": ["task_001"],
-  "metadata": {
-    "cascade_generated": true,
-    "cascade_rule": "Service Scaffold Cascade",
-    "parent_task": "task_001"
-  }
-}
+#### Observability Configuration
+```
+monitoring/prometheus.yml    # Added writer:8080/metrics scrape target
+docker/docker-compose.yml    # Added writer service with Dgraph/Weaviate/MinIO deps
 ```
 
-### Task 003: Add observability config
-```json
-{
-  "id": "task_003",
-  "title": "Add /health & /metrics + Prometheus scrape config for writer",
-  "component": "observability",
-  "type": "observability",
-  "priority": "high",
-  "status": "open",
-  "assignee": "developer",
-  "labels": ["observability", "monitoring", "prometheus"],
-  "depends_on": ["task_002"],
-  "metadata": {
-    "cascade_generated": true,
-    "cascade_rule": "Service Scaffold Cascade",
-    "parent_task": "task_001"
-  }
-}
+#### Documentation
+```
+docs/adr/adr-002-writer-service.md    # Architecture decision record
+README.md                             # Updated with writer service info
 ```
 
-### Task 004: Generate documentation
-```json
-{
-  "id": "task_004",
-  "title": "Generate ADR stub and update README for writer",
-  "component": "documentation",
-  "type": "documentation",
-  "priority": "medium",
-  "status": "open",
-  "assignee": "developer",
-  "labels": ["documentation", "adr"],
-  "depends_on": ["task_003"],
-  "metadata": {
-    "cascade_generated": true,
-    "cascade_rule": "Service Scaffold Cascade",
-    "parent_task": "task_001"
-  }
-}
+#### Git Workflow
+```
+.git/
+└── refs/heads/feature/writer-scaffold  # New feature branch
 ```
 
-### Task 005: Git workflow
-```json
-{
-  "id": "task_005",
-  "title": "Create branch and commit scaffold setup for writer",
-  "component": "git",
-  "type": "git",
-  "priority": "medium",
-  "status": "open",
-  "assignee": "developer",
-  "labels": ["git", "branch", "commit"],
-  "depends_on": ["task_004"],
-  "metadata": {
-    "cascade_generated": true,
-    "cascade_rule": "Service Scaffold Cascade",
-    "parent_task": "task_001"
-  }
-}
-```
-
-## Additional Cascade Rules That Could Trigger
-
-### If API endpoints are mentioned:
-**API Endpoint Cascade** could trigger:
-- Unit tests for API endpoints
-- API documentation generation
-
-### If observability is explicitly mentioned:
-**Observability Cascade** could trigger:
-- Prometheus scrape configuration
-- Grafana dashboard panels
-
-### If database changes are mentioned:
-**Database Migration Cascade** could trigger:
-- Schema design tasks
-- Migration script creation
-- Seed data setup
-
-## Security Enforcement
+### Security Enforcement Applied
 
 All generated tasks are subject to security constraints:
 
@@ -193,7 +109,7 @@ All generated tasks are subject to security constraints:
 - **Container operations**: User socket only, no privileged containers
 - **Redis operations**: Session-scoped only, size limits enforced
 
-## Benefits of Cascade Rules
+### Benefits Demonstrated
 
 1. **Consistency**: Every service follows the same scaffolding pattern
 2. **Completeness**: No steps are forgotten (observability, docs, git)
@@ -202,6 +118,23 @@ All generated tasks are subject to security constraints:
 5. **Visibility**: Clear dependency chains and execution order
 6. **Security**: All operations are security-constrained
 
-## Configuration
+### Configuration Reference
 
 The cascade rules are defined in `.windsurf/cascade-rules.yaml` and can be customized for different project needs. The MCP Task Master server automatically processes these rules when tasks are created.
+
+**Service Scaffold Cascade Rule:**
+```yaml
+- name: "Service Scaffold Cascade"
+  trigger:
+    whenTool: "task-master.task_create"
+    condition:
+      component: "service"
+  actions:
+    - createTask:
+        description: "Scaffold ${component} service (http skeleton, Dockerfile, health, metrics)"
+        priority: "high"
+        labels: ["scaffold", "service", "backend"]
+    # ... additional tasks for observability, docs, git
+```
+
+This example demonstrates how a single task creation can automatically generate a complete development workflow with proper dependencies, security constraints, and machine-importable configuration formats.

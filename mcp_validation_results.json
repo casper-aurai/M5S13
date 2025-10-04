@@ -1,0 +1,69 @@
+{
+  "timestamp": 1759538313.535403,
+  "results": [
+    {
+      "server": "filesystem",
+      "test": "fs_read",
+      "success": true,
+      "details": "Successfully read README.md"
+    },
+    {
+      "server": "filesystem",
+      "test": "fs_list",
+      "success": true,
+      "details": "Successfully listed services directory"
+    },
+    {
+      "server": "git",
+      "test": "git_status",
+      "success": true,
+      "details": "Successfully got git status"
+    },
+    {
+      "server": "git",
+      "test": "git_branch",
+      "success": true,
+      "details": "Successfully got current branch"
+    },
+    {
+      "server": "redis",
+      "test": "redis_ping",
+      "success": false,
+      "details": "Exit code: 1 (Redis may not be running)"
+    },
+    {
+      "server": "fetch",
+      "test": "http_health",
+      "success": true,
+      "details": "Successfully checked service health"
+    },
+    {
+      "server": "podman",
+      "test": "podman_ps",
+      "success": false,
+      "details": "Exit code: 1 (Podman may not be available)"
+    },
+    {
+      "server": "sequential-thinking",
+      "test": "session_create",
+      "success": true,
+      "details": "Successfully created session"
+    },
+    {
+      "server": "task-master",
+      "test": "project_list",
+      "success": true,
+      "details": "Successfully listed projects"
+    },
+    {
+      "server": "http-mcp",
+      "test": "validate_endpoint",
+      "success": true,
+      "details": "Successfully validated endpoint"
+    }
+  ],
+  "summary": {
+    "passed": 8,
+    "total": 10
+  }
+}
