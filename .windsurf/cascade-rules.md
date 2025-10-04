@@ -22,9 +22,10 @@
 
 ## Atomic Commits Rules
 - **Single Purpose**: Each commit should represent one logical change (new service, config update, documentation, etc.)
+- **One Edit, One Commit**: Every file edit must land in its own commit with a clear summary so Cascade/MCP automation can map changes back to their originating tasks
 - **PR Linking**: Pull requests must link to relevant ADRs or backlog issues
 - **Commit Messages**: Use conventional commit format: type(scope): description
-- **No Mixed Changes**: Don't mix unrelated changes in a single commit
+- **No Mixed Changes**: Don't mix unrelated changes in a single commit; the automation enforces this by validating per-edit commits
 
 ## Infrastructure as Code (IaC) Clarity Rules
 - **Compose Organization**: Keep docker-compose.yml clean and organized by service type
