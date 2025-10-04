@@ -555,20 +555,30 @@ class TaskMasterMCPServer(MCPServer):
                 title = self._interpolate_variables(task_data.get('description', ''), parent_task)
                 description = title
 
+                metadata = {
+                    'cascade_generated': True,
+                    'cascade_rule': rule['name'],
+                    'parent_task': parent_task.id
+                }
+
+                extra_metadata = task_data.get('metadata', {})
+                if isinstance(extra_metadata, dict):
+                    metadata = self._deep_merge_dicts(
+                        metadata,
+                        self._interpolate_structure(extra_metadata, parent_task)
+                    )
+
                 # Create subtask
                 subtask = Task(
                     title=title,
                     description=description,
                     task_type=task_data.get('component', 'task'),
+                    component=task_data.get('component'),
                     priority=task_data.get('priority', 'medium'),
                     labels=task_data.get('labels', []),
                     parent_id=parent_task.id,
                     create_remote_issue=parent_task.create_remote_issue,
-                    metadata={
-                        'cascade_generated': True,
-                        'cascade_rule': rule['name'],
-                        'parent_task': parent_task.id
-                    }
+                    metadata=metadata
                 )
 
                 # Add dependency relationship
@@ -580,6 +590,35 @@ class TaskMasterMCPServer(MCPServer):
                 generated_tasks.append(subtask)
 
         return generated_tasks
+
+    def _interpolate_structure(self, data: Any, task: Task) -> Any:
+        """Recursively interpolate template variables in cascade metadata."""
+        if isinstance(data, str):
+            return self._interpolate_variables(data, task)
+
+        if isinstance(data, list):
+            return [self._interpolate_structure(item, task) for item in data]
+
+        if isinstance(data, dict):
+            return {key: self._interpolate_structure(value, task) for key, value in data.items()}
+
+        return data
+
+    def _deep_merge_dicts(self, base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+        """Deep merge two dictionaries, preferring values from the extra dict."""
+        merged = dict(base)
+
+        for key, value in extra.items():
+            if (
+                key in merged
+                and isinstance(merged[key], dict)
+                and isinstance(value, dict)
+            ):
+                merged[key] = self._deep_merge_dicts(merged[key], value)
+            else:
+                merged[key] = value
+
+        return merged
 
     def _interpolate_variables(self, template: str, task: Task) -> str:
         """Interpolate variables in cascade rule templates."""

@@ -145,3 +145,58 @@ def test_cascade_tasks_inherit_remote_issue_flag(configure_repo_config, db_path:
         stored = server.database.get_task(cascade_task["id"])
         assert stored is not None
         assert stored.create_remote_issue is True
+
+
+def test_cascade_metadata_guidance(configure_repo_config, db_path: Path):
+    """Cascade subtasks should merge metadata and interpolate templates."""
+
+    configure_repo_config(enforce=False)
+    server = TaskMasterMCPServer(db_path=str(db_path))
+    server.cascade_rules = [
+        {
+            "name": "Metadata Guidance",
+            "trigger": {
+                "whenTool": "task-master.task_create",
+                "condition": {"component": "service"},
+            },
+            "actions": [
+                {
+                    "createTask": {
+                        "component": "commit",
+                        "description": "Commit ${component} changes",
+                        "priority": "medium",
+                        "labels": ["git", "commit"],
+                        "metadata": {
+                            "git": {
+                                "commitMessageGuidance": {
+                                    "requiresDescriptiveSummary": True,
+                                    "summaryTemplate": "Summaries for ${component}",
+                                }
+                            },
+                            "notes": ["${component} readiness", {"detail": "${component} runbook"}],
+                        },
+                    }
+                }
+            ],
+        }
+    ]
+
+    result = asyncio.run(
+        server.task_create(
+            {
+                "title": "Service kickoff",
+                "description": "Cascade metadata",
+                "component": "writer",
+                "type": "service",
+            }
+        )
+    )
+
+    assert result["cascade_generated"] == 1
+    cascade_task = result["cascade_tasks"][0]
+    assert cascade_task["component"] == "commit"
+    guidance = cascade_task["metadata"]["git"]["commitMessageGuidance"]
+    assert guidance["requiresDescriptiveSummary"] is True
+    assert guidance["summaryTemplate"] == "Summaries for writer"
+    assert cascade_task["metadata"]["notes"][0] == "writer readiness"
+    assert cascade_task["metadata"]["notes"][1]["detail"] == "writer runbook"

@@ -47,12 +47,23 @@ When a developer creates a task to scaffold a new service component:
    - Description: "Create branch and commit scaffold setup for writer"
    - Priority: "medium"
    - Labels: ["git", "branch", "commit"]
+   - Metadata:
+     - `git.commitMessageGuidance.summaryTemplate`: "Provide a descriptive summary of writer changes"
+     - `git.commitMessageGuidance.summaryField`: `descriptive_summary`
+     - `git.commitMessageGuidance.styleGuide`: "Use present tense, highlight primary impact, limit to 72 characters"
+
+5. **Commit summary validation**
+   - Component: "commit-validation"
+   - Description: "Validate descriptive summary commit for writer"
+   - Priority: "medium"
+   - Labels: ["git", "commit", "validation"]
+   - Metadata checklist ensures a summary-backed commit exists and is captured for release notes
 
 ### Generated Task Tree
 
 ```
 📋 Original Task: scaffold service-writer
-└── 🎯 Service Scaffold Cascade (4 subtasks)
+└── 🎯 Service Scaffold Cascade (5 subtasks)
     ├── 🔧 Writer Service Scaffolding
     │   ├── HTTP skeleton with /health & /metrics endpoints
     │   ├── Dockerfile with healthcheck
@@ -67,7 +78,8 @@ When a developer creates a task to scaffold a new service component:
     │   └── README.md updates with writer service info
     └── 🔀 Git Workflow Setup
         ├── feature/writer-scaffold branch creation
-        ├── Initial commit of service scaffolding
+        ├── Initial commit of service scaffolding with descriptive summary guidance
+        ├── Validation checklist to confirm the summary-backed commit exists
         └── PR template with proper labels and ADR references
 ```
 
