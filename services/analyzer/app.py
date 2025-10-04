@@ -23,11 +23,11 @@ except ImportError:
     exit(1)
 
 # Add kafka-python dependency
-try:
-    from kafka import KafkaConsumer, KafkaProducer
-except ImportError:
-    print("kafka-python not installed. Install with: pip install kafka-python")
-    exit(1)
+# try:
+#     from kafka import KafkaConsumer, KafkaProducer
+# except ImportError:
+#     print("kafka-python not installed. Install with: pip install kafka-python")
+#     exit(1)
 
 # Add weaviate-client dependency
 try:
@@ -60,27 +60,27 @@ class AnalyzerService:
         self.weaviate_text_property = os.getenv('WEAVIATE_TEXT_PROPERTY', 'text')
         self.weaviate_metadata_property = os.getenv('WEAVIATE_METADATA_PROPERTY', 'metadata')
 
-        # Kafka configuration
-        kafka_brokers = os.getenv('KAFKA_BROKERS', 'localhost:9092')
-
-        # Kafka consumer for code.mined topic
-        self.consumer = KafkaConsumer(
-            'code.mined',
-            bootstrap_servers=[kafka_brokers],
-            group_id='analyzer-service-group',
-            value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-            auto_offset_reset='earliest',
-            enable_auto_commit=True
-        )
+        # Kafka configuration (disabled for now)
+        # kafka_brokers = os.getenv('KAFKA_BROKERS', 'localhost:9092')
         
-        # Kafka producer for code.analyzed topic
-        self.producer = KafkaProducer(
-            bootstrap_servers=[kafka_brokers],
-            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-            key_serializer=lambda k: k.encode('utf-8') if k else None,
-            acks='all',
-            retries=3
-        )
+        # Kafka consumer for code.mined topic (disabled)
+        # self.consumer = KafkaConsumer(
+        #     'code.mined',
+        #     bootstrap_servers=[kafka_brokers],
+        #     group_id='analyzer-service-group',
+        #     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+        #     auto_offset_reset='earliest',
+        #     enable_auto_commit=True
+        # )
+        
+        # Kafka producer for code.analyzed topic (disabled)
+        # self.producer = KafkaProducer(
+        #     bootstrap_servers=[kafka_brokers],
+        #     value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+        #     key_serializer=lambda k: k.encode('utf-8') if k else None,
+        #     acks='all',
+        #     retries=3
+        # )
         
         # Setup routes
         self.app.router.add_get('/health', self.health)
@@ -90,10 +90,10 @@ class AnalyzerService:
         self.app.router.add_post('/embed', self.embed)
         self.app.router.add_get('/search', self.search)
         
-        # Start Kafka consumer in background
-        import threading
-        self.consumer_thread = threading.Thread(target=self._consume_messages, daemon=True)
-        self.consumer_thread.start()
+        # Start Kafka consumer in background (disabled)
+        # import threading
+        # self.consumer_thread = threading.Thread(target=self._consume_messages, daemon=True)
+        # self.consumer_thread.start()
         
     def _consume_messages(self):
         """Consume messages from code.mined topic."""
