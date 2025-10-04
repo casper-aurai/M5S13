@@ -1,21 +1,55 @@
 #!/usr/bin/env python3
-"""
-Task Master MCP Server
+"""Task Master MCP Server implementation."""
 
-Provides task and issue management capabilities.
-Implements stdio and WebSocket transport layers.
-"""
+from __future__ import annotations
 
+import asyncio
+import importlib
+import json
+import logging
+import os
+import sqlite3
 import subprocess
+import sys
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+import uuid
+import shlex
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+yaml_spec = importlib.util.find_spec("yaml")
+yaml = importlib.import_module("yaml") if yaml_spec is not None else None
+
+
+REPO_CONFIG_PATH = Path(".windsurf/github-repo.json")
+REMOTE_ISSUE_TRIGGER_LABELS = frozenset(
+    {
+        "kafka",
+        "weaviate",
+        "reporting",
+        "airflow",
+        "observability",
+        "dx",
+        "dgraph",
+        "storage",
+        "deployment",
+        "data-flow",
+        "architecture",
+    }
+)
 
 try:
-    from .base_mcp_server import MCPServer, MCPError, Tool
+    from .base_mcp_server import MCPError, MCPServer, Tool
 except ImportError:
     # For standalone execution
-    from base_mcp_server import MCPServer, MCPError, Tool
+    from base_mcp_server import MCPError, MCPServer, Tool
+
+try:  # Optional GitHub tooling helper
+    from . import github_mcp  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency for offline tests
+    github_mcp = None  # type: ignore
 
 
 class Task:
@@ -29,16 +63,17 @@ class Task:
         priority: str = "medium",
         status: str = "open",
         assignee: str = None,
-        labels: List[str] = None,
+        labels: Optional[List[str]] = None,
         parent_id: str = None,
         project_id: str = None,
         created_at: Optional[datetime] = None,
         updated_at: Optional[datetime] = None,
         completed_at: Optional[datetime] = None,
-        metadata: Dict[str, Any] = None,
-        depends_on: List[str] = None,
-        blocked_by: List[str] = None,
-        subtasks: List[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        depends_on: Optional[List[str]] = None,
+        blocked_by: Optional[List[str]] = None,
+        subtasks: Optional[List[str]] = None,
+        create_remote_issue: bool = True,
     ):
         """Initialize task."""
         self.id = str(uuid.uuid4())
@@ -58,9 +93,11 @@ class Task:
         self.completed_at = completed_at
 
         self.metadata = metadata or {}
+        self.github_issue_number: Optional[int] = None
         self.depends_on = depends_on or []
         self.blocked_by = blocked_by or []
         self.subtasks = subtasks or []
+        self.create_remote_issue = bool(create_remote_issue)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert task to dictionary representation."""
@@ -83,6 +120,7 @@ class Task:
             "depends_on": self.depends_on,
             "blocked_by": self.blocked_by,
             "subtasks": self.subtasks,
+            "github_issue_number": self.github_issue_number,
         }
 
 
@@ -152,6 +190,7 @@ class TaskDatabase:
                     depends_on TEXT,  -- JSON array
                     blocked_by TEXT,  -- JSON array
                     subtasks TEXT,  -- JSON array
+                    create_remote_issue INTEGER DEFAULT 1,
                     FOREIGN KEY (parent_id) REFERENCES tasks (id),
                     FOREIGN KEY (project_id) REFERENCES projects (id)
                 )
@@ -173,6 +212,15 @@ class TaskDatabase:
                 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks (assignee)
             """)
 
+            # Ensure the create_remote_issue column exists for legacy databases
+            existing_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(tasks)")
+            }
+            if "create_remote_issue" not in existing_columns:
+                conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN create_remote_issue INTEGER DEFAULT 1"
+                )
+
     def save_task(self, task: Task) -> bool:
         """Save task to database."""
         try:
@@ -181,8 +229,8 @@ class TaskDatabase:
                     INSERT OR REPLACE INTO tasks
                     (id, title, description, type, component, priority, status, assignee, labels,
                      parent_id, project_id, created_at, updated_at, completed_at, metadata,
-                     depends_on, blocked_by, subtasks)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     depends_on, blocked_by, subtasks, create_remote_issue)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     task.id,
                     task.title,
@@ -201,7 +249,8 @@ class TaskDatabase:
                     json.dumps(task.metadata),
                     json.dumps(task.depends_on),
                     json.dumps(task.blocked_by),
-                    json.dumps(task.subtasks)
+                    json.dumps(task.subtasks),
+                    int(bool(getattr(task, "create_remote_issue", True))),
                 ))
                 return True
         except Exception as e:
@@ -336,16 +385,7 @@ class TaskDatabase:
 
     def _row_to_task(self, row: sqlite3.Row) -> Task:
         """Convert database row to Task object."""
-        # Find the component field index
-        component_index = None
-        for i, col in enumerate(row.description):
-            if col[0] == 'component':
-                component_index = i
-                break
-
-        component_value = None
-        if component_index is not None and component_index < len(row):
-            component_value = row[component_index]
+        component_value = row["component"] if "component" in row.keys() else None
 
         task = Task(
             title=row["title"],
@@ -369,6 +409,10 @@ class TaskDatabase:
         task.depends_on = json.loads(row["depends_on"]) if row["depends_on"] else []
         task.blocked_by = json.loads(row["blocked_by"]) if row["blocked_by"] else []
         task.subtasks = json.loads(row["subtasks"]) if row["subtasks"] else []
+        if "create_remote_issue" in row.keys():
+            task.create_remote_issue = bool(row["create_remote_issue"])
+        else:
+            task.create_remote_issue = True
 
         return task
 
@@ -388,22 +432,311 @@ class TaskMasterMCPServer(MCPServer):
     def __init__(self, db_path: str = "./data/tasks.db"):
         super().__init__("task-master", "1.0.0")
 
+        self.logger = logging.getLogger(__name__)
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.repo_config = self._load_repo_config()
+        self._enforce_remote_issues = bool(
+            self.repo_config.get("enforce_remote_issues", True)
+        )
+        self.remote_issue_trigger_labels = {
+            label.lower() for label in REMOTE_ISSUE_TRIGGER_LABELS
+        }
         self.database = TaskDatabase(db_path)  # Initialize the database
         self.cascade_rules = self._load_cascade_rules()
         self._init_database()
-
-        # Initialize logger
-        self.logger = logging.getLogger(__name__)
+        self._github_helper: Optional["github_mcp.GithubMCP"] = None if github_mcp else None
 
     def _init_database(self):
         """Additional database initialization if needed."""
         # The TaskDatabase class handles schema creation
         pass
 
+    def _load_repo_config(self) -> Dict[str, Any]:
+        """Load repository configuration from disk."""
+        if not REPO_CONFIG_PATH.exists():
+            self.logger.debug(
+                "Repo config not found at %s; using defaults", REPO_CONFIG_PATH
+            )
+            return {}
+
+        try:
+            data = json.loads(REPO_CONFIG_PATH.read_text())
+            if not isinstance(data, dict):
+                self.logger.warning(
+                    "Unexpected repo config structure in %s; using defaults",
+                    REPO_CONFIG_PATH,
+                )
+                return {}
+            return data
+        except json.JSONDecodeError as exc:
+            self.logger.warning(
+                "Failed to parse repo config %s: %s", REPO_CONFIG_PATH, exc
+            )
+            return {}
+        except OSError as exc:
+            self.logger.warning(
+                "Unable to read repo config %s: %s", REPO_CONFIG_PATH, exc
+            )
+            return {}
+
+    def _should_create_remote_issue(
+        self, requested_flag: bool, labels: List[str]
+    ) -> bool:
+        """Determine whether remote issue creation should be enabled."""
+        if self._enforce_remote_issues:
+            return True
+
+        normalized_labels = {label.lower() for label in labels if isinstance(label, str)}
+        if normalized_labels & self.remote_issue_trigger_labels:
+            return True
+
+        return bool(requested_flag)
+
+    def _github_repo(self) -> Optional[str]:
+        """Return the configured GitHub repository if available."""
+
+        repo = self.repo_config.get("default_repo")
+        if isinstance(repo, str) and repo:
+            return repo
+
+        env_repo = os.getenv("MCP_GITHUB_DEFAULT_REPO")
+        if env_repo:
+            return env_repo
+
+        return None
+
+    def _github_default_labels(self) -> List[str]:
+        """Return default labels configured for GitHub issues."""
+
+        labels = self.repo_config.get("default_labels", [])
+        if not isinstance(labels, list):
+            return []
+        return [str(label) for label in labels if isinstance(label, str) and label]
+
+    def _github_cli_ready(self) -> bool:
+        """Check whether GitHub CLI interactions are possible."""
+
+        if github_mcp is None:
+            return False
+
+        repo = self._github_repo()
+        if not repo:
+            self.logger.debug("GitHub automation skipped: no default repository configured")
+            return False
+
+        try:
+            github_mcp._assert_gh_auth()
+        except Exception as exc:  # pragma: no cover - relies on gh CLI
+            self.logger.warning("GitHub CLI authentication missing: %s", exc)
+            return False
+
+        return True
+
+    def _get_github_helper(self) -> Optional["github_mcp.GithubMCP"]:
+        """Return a lazily initialized GitHub MCP helper."""
+
+        if github_mcp is None:
+            return None
+
+        if self._github_helper is None:
+            self._github_helper = github_mcp.GithubMCP()
+
+        return self._github_helper
+
+    def _ensure_github_labels(self, repo: str, labels: List[str]) -> None:
+        """Ensure labels exist on the remote repository."""
+
+        if not labels or github_mcp is None:
+            return
+
+        helper = self._get_github_helper()
+        if helper is None:
+            return
+
+        try:
+            helper._ensure_label_state(repo, labels)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            self.logger.warning("Failed to ensure GitHub labels %s: %s", labels, exc)
+
+    def _safe_run_github(self, command: str, context: str) -> Optional[subprocess.CompletedProcess]:
+        """Execute a GitHub CLI command safely, logging failures."""
+
+        if github_mcp is None:
+            return None
+
+        try:
+            return github_mcp._run(command)
+        except Exception as exc:  # pragma: no cover - requires gh CLI
+            self.logger.warning("GitHub %s command failed: %s", context, exc)
+            return None
+
+    def _render_issue_body(self, task: "Task") -> str:
+        """Render a markdown body for the GitHub issue."""
+
+        description = task.description.strip() if task.description else "_No description provided._"
+        lines = [description, "", "## Task Metadata", f"- Task ID: `{task.id}`"]
+
+        if task.component:
+            lines.append(f"- Component: `{task.component}`")
+        lines.append(f"- Status: `{task.status}`")
+        lines.append(f"- Priority: `{task.priority}`")
+        if task.labels:
+            labels = ", ".join(sorted({label for label in task.labels if label}))
+            if labels:
+                lines.append(f"- Labels: {labels}")
+
+        return "\n".join(lines)
+
+    def _create_remote_issue_for_task(self, task: "Task") -> Optional[Dict[str, Any]]:
+        """Create (or reuse) a GitHub issue for the given task."""
+
+        if not task.create_remote_issue or github_mcp is None:
+            return None
+
+        metadata = task.metadata.setdefault("github", {})
+        if metadata.get("issue_number"):
+            return metadata
+
+        if not self._github_cli_ready():
+            return None
+
+        repo = self._github_repo()
+        if not repo:
+            return None
+
+        labels = sorted(set((task.labels or []) + self._github_default_labels()))
+        if labels:
+            self._ensure_github_labels(repo, labels)
+
+        title = task.title
+        body = self._render_issue_body(task)
+
+        existing_number: Optional[int] = None
+        try:
+            existing_number = github_mcp._search_issue_by_title(repo, title)
+        except Exception:
+            existing_number = None
+
+        reused = False
+        issue_url = ""
+        issue_number: Optional[int] = None
+
+        if existing_number:
+            reused = True
+            issue_number = existing_number
+            issue_url = f"https://github.com/{repo}/issues/{existing_number}"
+        else:
+            command = f'gh issue create --repo "{repo}" --title {shlex.quote(title)} --body {shlex.quote(body)}'
+            for label in labels:
+                command += f' --label "{label}"'
+
+            proc = self._safe_run_github(command, "issue create")
+            if proc is None or not proc.stdout:
+                return None
+
+            issue_url = proc.stdout.strip().splitlines()[-1]
+            try:
+                issue_number = int(issue_url.rstrip("/").split("/")[-1])
+            except (ValueError, IndexError):  # pragma: no cover - defensive
+                self.logger.warning("Unable to parse issue number from %s", issue_url)
+                return None
+
+        metadata.update(
+            {
+                "repo": repo,
+                "issue_number": issue_number,
+                "issue_url": issue_url,
+                "reused": reused,
+                "labels": labels,
+                "last_sync": datetime.utcnow().isoformat(),
+            }
+        )
+
+        self.database.save_task(task)
+        return metadata
+
+    def _sync_remote_issue_on_update(
+        self,
+        task: "Task",
+        old_status: Optional[str],
+        status_changed: bool,
+        title_changed: bool,
+        description_changed: bool,
+    ) -> None:
+        """Update remote GitHub issue when task metadata changes."""
+
+        if github_mcp is None or not task.create_remote_issue:
+            return
+
+        metadata = task.metadata.get("github") or self._create_remote_issue_for_task(task)
+        if not metadata or not metadata.get("issue_number"):
+            return
+
+        repo = metadata.get("repo") or self._github_repo()
+        issue_number = metadata.get("issue_number")
+        if not repo or not issue_number:
+            return
+
+        base_command = f'gh issue edit {issue_number} --repo "{repo}"'
+        command = base_command
+
+        if title_changed:
+            command += f' --title {shlex.quote(task.title)}'
+        if description_changed:
+            command += f' --body {shlex.quote(self._render_issue_body(task))}'
+
+        current_labels = sorted({label for label in (task.labels or []) if label})
+        previous_labels = sorted({label for label in metadata.get("labels", []) if label})
+        labels_added = sorted(set(current_labels) - set(previous_labels))
+        labels_removed = sorted(set(previous_labels) - set(current_labels))
+
+        if labels_added:
+            self._ensure_github_labels(repo, labels_added)
+            for label in labels_added:
+                command += f' --add-label "{label}"'
+        if labels_removed:
+            for label in labels_removed:
+                command += f' --remove-label "{label}"'
+
+        if command != base_command:
+            self._safe_run_github(command, "issue edit")
+            metadata["labels"] = current_labels
+
+        if status_changed:
+            comment_lines = [
+                f"Task status changed from **{old_status or 'unknown'}** to **{task.status}**",
+                f"Timestamp: {datetime.utcnow().isoformat()}Z",
+            ]
+            comment = "\n\n".join(comment_lines)
+            self._safe_run_github(
+                f'gh issue comment {issue_number} --repo "{repo}" --body {shlex.quote(comment)}',
+                "issue comment",
+            )
+
+            if task.status == "completed":
+                self._safe_run_github(
+                    f'gh issue close {issue_number} --repo "{repo}" --reason completed',
+                    "issue close",
+                )
+                metadata["closed_at"] = datetime.utcnow().isoformat()
+            elif old_status == "completed":
+                self._safe_run_github(
+                    f'gh issue reopen {issue_number} --repo "{repo}"',
+                    "issue reopen",
+                )
+                metadata.pop("closed_at", None)
+
+            metadata["last_status"] = task.status
+
+        metadata["last_sync"] = datetime.utcnow().isoformat()
+        self.database.save_task(task)
     def _load_cascade_rules(self) -> List[Dict[str, Any]]:
         """Load cascade rules from YAML configuration."""
+        if yaml is None:
+            self.logger.debug("PyYAML not available; skipping cascade rules load")
+            return []
+
         try:
             rules_path = Path.cwd() / ".windsurf" / "cascade-rules.yaml"
             if rules_path.exists():
@@ -468,19 +801,30 @@ class TaskMasterMCPServer(MCPServer):
                 title = self._interpolate_variables(task_data.get('description', ''), parent_task)
                 description = title
 
+                metadata = {
+                    'cascade_generated': True,
+                    'cascade_rule': rule['name'],
+                    'parent_task': parent_task.id
+                }
+
+                extra_metadata = task_data.get('metadata', {})
+                if isinstance(extra_metadata, dict):
+                    metadata = self._deep_merge_dicts(
+                        metadata,
+                        self._interpolate_structure(extra_metadata, parent_task)
+                    )
+
                 # Create subtask
                 subtask = Task(
                     title=title,
                     description=description,
                     task_type=task_data.get('component', 'task'),
+                    component=task_data.get('component'),
                     priority=task_data.get('priority', 'medium'),
                     labels=task_data.get('labels', []),
                     parent_id=parent_task.id,
-                    metadata={
-                        'cascade_generated': True,
-                        'cascade_rule': rule['name'],
-                        'parent_task': parent_task.id
-                    }
+                    create_remote_issue=parent_task.create_remote_issue,
+                    metadata=metadata
                 )
 
                 # Add dependency relationship
@@ -492,6 +836,35 @@ class TaskMasterMCPServer(MCPServer):
                 generated_tasks.append(subtask)
 
         return generated_tasks
+
+    def _interpolate_structure(self, data: Any, task: Task) -> Any:
+        """Recursively interpolate template variables in cascade metadata."""
+        if isinstance(data, str):
+            return self._interpolate_variables(data, task)
+
+        if isinstance(data, list):
+            return [self._interpolate_structure(item, task) for item in data]
+
+        if isinstance(data, dict):
+            return {key: self._interpolate_structure(value, task) for key, value in data.items()}
+
+        return data
+
+    def _deep_merge_dicts(self, base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+        """Deep merge two dictionaries, preferring values from the extra dict."""
+        merged = dict(base)
+
+        for key, value in extra.items():
+            if (
+                key in merged
+                and isinstance(merged[key], dict)
+                and isinstance(value, dict)
+            ):
+                merged[key] = self._deep_merge_dicts(merged[key], value)
+            else:
+                merged[key] = value
+
+        return merged
 
     def _interpolate_variables(self, template: str, task: Task) -> str:
         """Interpolate variables in cascade rule templates."""
@@ -507,8 +880,8 @@ class TaskMasterMCPServer(MCPServer):
             cursor.execute('''
                 INSERT OR REPLACE INTO tasks
                 (id, title, description, type, component, priority, status, assignee, labels,
-                 parent_id, project_id, created_at, updated_at, completed_at, metadata, depends_on, blocked_by, subtasks)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 parent_id, project_id, created_at, updated_at, completed_at, metadata, depends_on, blocked_by, subtasks, create_remote_issue)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 task.id, task.title, task.description, task.type, task.component, task.priority,
                 task.status, task.assignee, json.dumps(task.labels),
@@ -516,7 +889,8 @@ class TaskMasterMCPServer(MCPServer):
                 task.updated_at.isoformat() if task.updated_at else None,
                 task.completed_at.isoformat() if task.completed_at else None,
                 json.dumps(task.metadata), json.dumps(task.depends_on),
-                json.dumps(task.blocked_by), json.dumps(task.subtasks)
+                json.dumps(task.blocked_by), json.dumps(task.subtasks),
+                int(bool(getattr(task, "create_remote_issue", True)))
             ))
 
             conn.commit()
@@ -574,10 +948,15 @@ class TaskMasterMCPServer(MCPServer):
                         "items": {"type": "string"},
                         "description": "Task IDs this task depends on"
                     },
-                    "metadata": {
-                        "type": "object",
-                        "description": "Additional task metadata"
-                    }
+                    "create_remote_issue": {
+                        "type": "boolean",
+                        "description": "Whether to open a remote issue",
+                        "default": True
+                    },
+                    "github_issue_number": {
+                        "type": "integer",
+                        "description": "GitHub issue number associated with this task"
+                    },
                 },
                 "required": ["title"]
             },
@@ -642,10 +1021,10 @@ class TaskMasterMCPServer(MCPServer):
                         "items": {"type": "string"},
                         "description": "Task IDs this task depends on"
                     },
-                    "metadata": {
-                        "type": "object",
-                        "description": "Additional task metadata"
-                    }
+                    "github_issue_number": {
+                        "type": "integer",
+                        "description": "GitHub issue number associated with this task"
+                    },
                 },
                 "required": ["task_id"]
             },
@@ -785,11 +1164,16 @@ class TaskMasterMCPServer(MCPServer):
         component = params.get("component")
         priority = params.get("priority", "medium")
         assignee = params.get("assignee")
-        labels = params.get("labels", [])
+        labels = params.get("labels") or []
         project_id = params.get("project_id")
         parent_id = params.get("parent_id")
+        github_issue_number = params.get("github_issue_number")
         depends_on = params.get("depends_on", [])
         metadata = params.get("metadata", {})
+        requested_remote_issue = params.get("create_remote_issue", True)
+        create_remote_issue = self._should_create_remote_issue(
+            requested_remote_issue, labels
+        )
 
         # Create task object
         task = Task(
@@ -802,8 +1186,13 @@ class TaskMasterMCPServer(MCPServer):
             labels=labels,
             parent_id=parent_id,
             project_id=project_id,
-            metadata=metadata
+            metadata=metadata,
+            create_remote_issue=create_remote_issue,
         )
+
+        # Set github issue number if provided
+        if github_issue_number:
+            task.github_issue_number = github_issue_number
 
         # Set dependencies
         task.depends_on = depends_on
@@ -835,11 +1224,24 @@ class TaskMasterMCPServer(MCPServer):
             # Save generated tasks to database
             self.database.save_task(generated_task)
 
+        if task.create_remote_issue:
+            self._create_remote_issue_for_task(task)
+
+        for generated_task in generated_tasks:
+            if generated_task.create_remote_issue:
+                self._create_remote_issue_for_task(generated_task)
+
+        persisted_task = self.database.get_task(task.id) or task
+        persisted_cascades: List[Task] = []
+        for generated_task in generated_tasks:
+            persisted = self.database.get_task(generated_task.id) or generated_task
+            persisted_cascades.append(persisted)
+
         return {
             "created": True,
-            "task": task.to_dict(),
+            "task": persisted_task.to_dict(),
             "cascade_generated": len(generated_tasks),
-            "cascade_tasks": [t.to_dict() for t in generated_tasks]
+            "cascade_tasks": [t.to_dict() for t in persisted_cascades]
         }
 
     async def task_get(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -862,6 +1264,12 @@ class TaskMasterMCPServer(MCPServer):
         if not task:
             raise MCPError("TASK_NOT_FOUND", f"Task not found: {task_id}")
 
+        requested_remote_issue = params.get("create_remote_issue", task.create_remote_issue)
+
+        old_title = task.title
+        old_description = task.description
+        old_status = task.status
+
         # Update fields if provided
         if "title" in params:
             task.title = params["title"]
@@ -881,10 +1289,14 @@ class TaskMasterMCPServer(MCPServer):
             task.assignee = params["assignee"]
         if "labels" in params:
             task.labels = params["labels"]
-        if "depends_on" in params:
-            task.depends_on = params["depends_on"]
+        if "github_issue_number" in params:
+            task.github_issue_number = params["github_issue_number"]
         if "metadata" in params:
             task.metadata.update(params["metadata"])
+
+        task.create_remote_issue = self._should_create_remote_issue(
+            requested_remote_issue, task.labels
+        )
 
         task.updated_at = datetime.utcnow()
 
@@ -892,9 +1304,24 @@ class TaskMasterMCPServer(MCPServer):
         if not self.database.save_task(task):
             raise MCPError("DATABASE_ERROR", "Failed to update task")
 
+        status_changed = "status" in params and params["status"] != old_status
+        title_changed = "title" in params and params["title"] != old_title
+        description_changed = "description" in params and params["description"] != old_description
+
+        if task.create_remote_issue:
+            self._sync_remote_issue_on_update(
+                task,
+                old_status,
+                status_changed,
+                title_changed,
+                description_changed,
+            )
+
+        persisted_task = self.database.get_task(task.id) or task
+
         return {
             "updated": True,
-            "task": task.to_dict()
+            "task": persisted_task.to_dict()
         }
 
     async def task_list(self, params: Dict[str, Any]) -> Dict[str, Any]:

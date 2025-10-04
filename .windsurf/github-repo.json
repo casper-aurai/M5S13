@@ -1,0 +1,6 @@
+{
+  "default_repo": "casper-aurai/M5S13",
+  "default_labels": ["documentation"],
+  "enforce_remote_issues": true,
+  "fallback_to_local_markdown": false
+}

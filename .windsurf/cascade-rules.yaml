@@ -1,3 +1,4 @@
+# --- existing rules (kept as-is) ---
 cascadeRules:
   - name: "Service Scaffold Cascade"
     trigger:
@@ -90,8 +91,8 @@ cascadeRules:
   - name: "Git Workflow Cascade"
     trigger:
       whenTool: "task-master.task_create"
-      condition:
-        component: "git"
+    condition:
+      component: "git"
     actions:
       - createTask:
           component: "branch"
@@ -103,6 +104,26 @@ cascadeRules:
           description: "Commit ${component} changes with conventional format"
           priority: "medium"
           labels: ["git", "commit"]
+          metadata:
+            git:
+              commitMessageGuidance:
+                requiresDescriptiveSummary: true
+                summaryField: "descriptive_summary"
+                summaryTemplate: "Provide a descriptive summary of ${component} changes"
+                styleGuide: "Use present tense, highlight primary impact, limit to 72 characters"
+      - createTask:
+          component: "commit-validation"
+          description: "Validate descriptive summary commit for ${component}"
+          priority: "medium"
+          labels: ["git", "commit", "validation"]
+          metadata:
+            git:
+              validation:
+                requiresSummaryCheck: true
+                summaryField: "descriptive_summary"
+                checklist:
+                  - "Confirm commit exists with descriptive summary"
+                  - "Ensure summary text is copied into release notes tracker"
       - createTask:
           component: "pr"
           description: "Create PR with proper labels and ADR references"
@@ -225,7 +246,109 @@ cascadeRules:
           labels: ["deployment", "healthcheck"]
     labels: ["deployment", "auto-generated"]
 
-# Global configuration for cascade rules
+# --- NEW: GitHub-first issue creation rules ---
+  - name: "Documentation Issues (GitHub-only)"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        descriptionContains: "create issue"
+    pre:
+      - tool: "github.ensure_labels"
+        with:
+          labels: ["documentation", "architecture", "data-flow", "observability", "deployment"]
+    actions:
+      - tool: "github.create_issue"
+        with:
+          title: "${task.title}"
+          body: "${task.description}"
+          labels: ["documentation"]
+    post:
+      - tool: "github.comment_issue"
+        with:
+          number: "${result.number}"
+          body: "Issue created by cascade rules. Labels ensured and policy enforced."
+
+  - name: "Enforce remote issues (deny local markdown)"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        descriptionContains: "create issue"
+    deny:
+      when:
+        config.enforce_remote_issues: true
+      message: "Local markdown issue creation is disabled. Use github.create_issue."
+
+# --- NEW: GitHub Issue Automation Rules ---
+
+  - name: "Auto-Close Completed Tasks with GitHub Issues"
+    trigger:
+      whenTool: "task-master.task_complete"
+      condition:
+        descriptionContains: "github"
+    actions:
+      - tool: "github.comment_issue"
+        with:
+          number: "${task.github_issue_number}"
+          body: "✅ **TASK COMPLETED**\n\nTask marked as complete. Closing associated GitHub issue."
+      - tool: "github.close_issue"
+        with:
+          number: "${task.github_issue_number}"
+          reason: "completed"
+    labels: ["automation", "github-sync"]
+
+  - name: "Auto-Update Issue Progress for Development Tasks"
+    trigger:
+      whenTool: "task-master.task_update"
+      condition:
+        labelsAnyOf: ["ready-for-dev", "p1-high", "p2-medium", "p3-low", "enhancement", "bug", "feature"]
+        descriptionContains: "progress"
+    actions:
+      - tool: "github.comment_issue"
+        with:
+          number: "${task.github_issue_number}"
+          body: "🔄 **PROGRESS UPDATE**\n\nTask status updated. Development work in progress."
+    labels: ["automation", "github-sync"]
+
+  - name: "Auto-Create GitHub Issue for New Development Tasks"
+    trigger:
+      whenTool: "task-master.task_create"
+      condition:
+        labelsAnyOf: ["ready-for-dev", "p1-high", "p2-medium", "p3-low", "enhancement", "bug", "feature"]
+    pre:
+      - tool: "github.ensure_labels"
+        with:
+          labels: ["ready-for-dev", "automation"]
+    actions:
+      - tool: "github.create_issue"
+        with:
+          title: "Auto: ${task.title}"
+          body: "${task.description}\n\n*Auto-created by cascade rules for development work.*"
+          labels: ["ready-for-dev", "automation"]
+    post:
+      - tool: "task-master.task_update"
+        with:
+          task_id: "${task.id}"
+          github_issue_number: "${result.number}"
+    labels: ["automation", "github-sync"]
+
+  - name: "Close GitHub issues when tasks complete"
+    trigger:
+      whenTool: "task-master.task_update"
+      condition:
+        statusEquals: "completed"
+        metadataPath: "github.issue_number"
+    actions:
+      - tool: "github.comment_issue"
+        with:
+          number: "${task.metadata.github.issue_number}"
+          body: "Task ${task.title} marked completed automatically by Task Master."
+      - tool: "github.close_issue"
+        with:
+          number: "${task.metadata.github.issue_number}"
+          reason: "completed"
+    labels: ["github", "automation", "issue-triage"]
+
+# --- global config stays as-is ---
 globalConfig:
   maxConcurrentTasks: 10
   taskTimeoutMinutes: 60
@@ -233,7 +356,6 @@ globalConfig:
   maxRetries: 3
   notificationChannels: ["#freshpoc-dev"]
 
-# Task templates for common patterns
 taskTemplates:
   serviceScaffold:
     type: "service"
@@ -259,7 +381,6 @@ taskTemplates:
     metadata:
       template: "documentation"
 
-# Security constraints for cascade rule execution
 securityConstraints:
   maxTasksPerHour: 100
   maxTasksPerUser: 50

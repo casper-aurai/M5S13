@@ -68,6 +68,7 @@ class Rule:
     updated_at: str
     created_by: str
     schema_version: str = "1.0"
+    last_change_summary: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert rule to dictionary."""
@@ -172,8 +173,9 @@ class CascadeRulesMCPServer(MCPServer):
                         rule = Rule(**{
                             k: v for k, v in rule_data.items()
                             if k in ['id', 'name', 'description', 'category', 'tags',
-                                   'priority', 'status', 'content', 'version',
-                                   'created_at', 'updated_at', 'created_by', 'schema_version']
+                                     'priority', 'status', 'content', 'version',
+                                     'created_at', 'updated_at', 'created_by', 'schema_version',
+                                     'last_change_summary']
                         })
                         # Convert enum values
                         rule.priority = RulePriority(rule_data.get("priority", "medium"))
@@ -257,7 +259,17 @@ class CascadeRulesMCPServer(MCPServer):
             try:
                 async with aiofiles.open(audit_file, 'r') as f:
                     content = await f.read()
-                    self.audit_log = json.loads(content)
+                    raw_data = json.loads(content)
+
+                    if isinstance(raw_data, dict):
+                        entries = raw_data.get("entries", [])
+                    else:
+                        entries = raw_data
+
+                    for entry in entries:
+                        entry.setdefault("summary", "")
+
+                    self.audit_log = entries
 
             except Exception as e:
                 logging.error(f"Error loading audit log: {e}")
@@ -278,7 +290,14 @@ class CascadeRulesMCPServer(MCPServer):
         except Exception as e:
             logging.error(f"Error saving audit log: {e}")
 
-    def _add_audit_entry(self, action: str, rule_id: str, details: Dict[str, Any], user: str = "system"):
+    def _add_audit_entry(
+        self,
+        action: str,
+        rule_id: str,
+        details: Dict[str, Any],
+        user: str = "system",
+        summary: str = ""
+    ):
         """Add entry to audit log."""
         entry = {
             "id": str(uuid.uuid4()),
@@ -286,6 +305,7 @@ class CascadeRulesMCPServer(MCPServer):
             "action": action,
             "rule_id": rule_id,
             "user": user,
+            "summary": summary,
             "details": details
         }
 
@@ -337,9 +357,21 @@ class CascadeRulesMCPServer(MCPServer):
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Rule tags"},
                     "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"], "default": "medium"},
                     "content": {"type": "object", "description": "Rule content"},
-                    "created_by": {"type": "string", "description": "Rule creator"}
+                    "created_by": {"type": "string", "description": "Rule creator"},
+                    "change_summary": {
+                        "type": "string",
+                        "description": "Summary of the change",
+                        "minLength": 1
+                    }
                 },
-                "required": ["name", "description", "category", "content", "created_by"]
+                "required": [
+                    "name",
+                    "description",
+                    "category",
+                    "content",
+                    "created_by",
+                    "change_summary"
+                ]
             },
             self.cascade_rule_create
         ))
@@ -371,9 +403,14 @@ class CascadeRulesMCPServer(MCPServer):
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Rule tags"},
                     "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
                     "content": {"type": "object", "description": "Rule content"},
-                    "updated_by": {"type": "string", "description": "User making update"}
+                    "updated_by": {"type": "string", "description": "User making update"},
+                    "change_summary": {
+                        "type": "string",
+                        "description": "Summary of the change",
+                        "minLength": 1
+                    }
                 },
-                "required": ["rule_id", "updated_by"]
+                "required": ["rule_id", "updated_by", "change_summary"]
             },
             self.cascade_rule_update
         ))
@@ -385,9 +422,14 @@ class CascadeRulesMCPServer(MCPServer):
                 "type": "object",
                 "properties": {
                     "rule_id": {"type": "string", "description": "Rule ID"},
-                    "deleted_by": {"type": "string", "description": "User deleting rule"}
+                    "deleted_by": {"type": "string", "description": "User deleting rule"},
+                    "change_summary": {
+                        "type": "string",
+                        "description": "Summary of the change",
+                        "minLength": 1
+                    }
                 },
-                "required": ["rule_id", "deleted_by"]
+                "required": ["rule_id", "deleted_by", "change_summary"]
             },
             self.cascade_rule_delete
         ))
@@ -433,9 +475,14 @@ class CascadeRulesMCPServer(MCPServer):
                 "type": "object",
                 "properties": {
                     "rule_id": {"type": "string", "description": "Rule ID"},
-                    "activated_by": {"type": "string", "description": "User activating rule"}
+                    "activated_by": {"type": "string", "description": "User activating rule"},
+                    "change_summary": {
+                        "type": "string",
+                        "description": "Summary of the change",
+                        "minLength": 1
+                    }
                 },
-                "required": ["rule_id", "activated_by"]
+                "required": ["rule_id", "activated_by", "change_summary"]
             },
             self.cascade_rule_activate
         ))
@@ -447,9 +494,14 @@ class CascadeRulesMCPServer(MCPServer):
                 "type": "object",
                 "properties": {
                     "rule_id": {"type": "string", "description": "Rule ID"},
-                    "deprecated_by": {"type": "string", "description": "User deprecating rule"}
+                    "deprecated_by": {"type": "string", "description": "User deprecating rule"},
+                    "change_summary": {
+                        "type": "string",
+                        "description": "Summary of the change",
+                        "minLength": 1
+                    }
                 },
-                "required": ["rule_id", "deprecated_by"]
+                "required": ["rule_id", "deprecated_by", "change_summary"]
             },
             self.cascade_rule_deprecate
         ))
@@ -643,13 +695,27 @@ class CascadeRulesMCPServer(MCPServer):
             data = await request.json()
 
             # Validate required fields
-            required_fields = ['name', 'description', 'category', 'content', 'created_by']
+            required_fields = [
+                'name',
+                'description',
+                'category',
+                'content',
+                'created_by',
+                'change_summary'
+            ]
             for field in required_fields:
                 if field not in data:
                     return web.json_response({"error": f"Missing field: {field}"}, status=400)
 
+            if not isinstance(data['change_summary'], str) or not data['change_summary'].strip():
+                return web.json_response({"error": "Invalid change_summary"}, status=400)
+
             # Create rule
-            rule = await self._create_rule_internal(data, data['created_by'])
+            rule = await self._create_rule_internal(
+                data,
+                data['created_by'],
+                data['change_summary'].strip()
+            )
 
             return web.json_response(rule.to_dict(), status=201)
 
@@ -662,11 +728,20 @@ class CascadeRulesMCPServer(MCPServer):
             rule_id = request.match_info['rule_id']
             data = await request.json()
 
-            if 'updated_by' not in data:
-                return web.json_response({"error": "Missing field: updated_by"}, status=400)
+            for field in ['updated_by', 'change_summary']:
+                if field not in data:
+                    return web.json_response({"error": f"Missing field: {field}"}, status=400)
+
+            if not isinstance(data['change_summary'], str) or not data['change_summary'].strip():
+                return web.json_response({"error": "Invalid change_summary"}, status=400)
 
             # Update rule
-            rule = await self._update_rule_internal(rule_id, data, data['updated_by'])
+            rule = await self._update_rule_internal(
+                rule_id,
+                data,
+                data['updated_by'],
+                data['change_summary'].strip()
+            )
 
             return web.json_response(rule.to_dict())
 
@@ -679,12 +754,16 @@ class CascadeRulesMCPServer(MCPServer):
             rule_id = request.match_info['rule_id']
             query = request.query
             deleted_by = query.get('deleted_by')
+            change_summary = query.get('change_summary', '')
 
             if not deleted_by:
                 return web.json_response({"error": "Missing parameter: deleted_by"}, status=400)
 
+            if not isinstance(change_summary, str) or not change_summary.strip():
+                return web.json_response({"error": "Missing parameter: change_summary"}, status=400)
+
             # Delete rule
-            await self._delete_rule_internal(rule_id, deleted_by)
+            await self._delete_rule_internal(rule_id, deleted_by, change_summary.strip())
 
             return web.json_response({"deleted": True})
 
@@ -883,7 +962,12 @@ class CascadeRulesMCPServer(MCPServer):
 
         return web.Response(text=html, content_type='text/html')
 
-    async def _create_rule_internal(self, rule_data: Dict[str, Any], created_by: str) -> Rule:
+    async def _create_rule_internal(
+        self,
+        rule_data: Dict[str, Any],
+        created_by: str,
+        change_summary: str
+    ) -> Rule:
         """Internal method to create a rule."""
         # Generate rule ID
         rule_id = str(uuid.uuid4())
@@ -905,7 +989,8 @@ class CascadeRulesMCPServer(MCPServer):
             version=rule_data.get("version", "1.0.0"),
             created_at=datetime.utcnow().isoformat(),
             updated_at=datetime.utcnow().isoformat(),
-            created_by=created_by
+            created_by=created_by,
+            last_change_summary=change_summary
         )
 
         # Check for conflicts
@@ -926,7 +1011,13 @@ class CascadeRulesMCPServer(MCPServer):
         self.rule_versions[rule_id].append(new_rule)
 
         # Audit log
-        self._add_audit_entry("create", rule_id, {"rule_name": new_rule.name}, created_by)
+        self._add_audit_entry(
+            "create",
+            rule_id,
+            {"rule_name": new_rule.name},
+            created_by,
+            summary=change_summary
+        )
 
         # Save to disk
         await self._save_rules()
@@ -934,7 +1025,13 @@ class CascadeRulesMCPServer(MCPServer):
 
         return new_rule
 
-    async def _update_rule_internal(self, rule_id: str, update_data: Dict[str, Any], updated_by: str) -> Rule:
+    async def _update_rule_internal(
+        self,
+        rule_id: str,
+        update_data: Dict[str, Any],
+        updated_by: str,
+        change_summary: str
+    ) -> Rule:
         """Internal method to update a rule."""
         if rule_id not in self.rules:
             raise MCPError("RULE_NOT_FOUND", f"Rule not found: {rule_id}")
@@ -954,7 +1051,8 @@ class CascadeRulesMCPServer(MCPServer):
             version=update_data.get("version", current_rule.version),
             created_at=current_rule.created_at,
             updated_at=datetime.utcnow().isoformat(),
-            created_by=current_rule.created_by
+            created_by=current_rule.created_by,
+            last_change_summary=change_summary
         )
 
         # Validate updated content
@@ -987,7 +1085,13 @@ class CascadeRulesMCPServer(MCPServer):
         self.rule_versions[rule_id].append(updated_rule)
 
         # Audit log
-        self._add_audit_entry("update", rule_id, {"changes": update_data}, updated_by)
+        self._add_audit_entry(
+            "update",
+            rule_id,
+            {"changes": update_data},
+            updated_by,
+            summary=change_summary
+        )
 
         # Save to disk
         await self._save_rules()
@@ -995,7 +1099,12 @@ class CascadeRulesMCPServer(MCPServer):
 
         return updated_rule
 
-    async def _delete_rule_internal(self, rule_id: str, deleted_by: str):
+    async def _delete_rule_internal(
+        self,
+        rule_id: str,
+        deleted_by: str,
+        change_summary: str
+    ):
         """Internal method to delete a rule."""
         if rule_id not in self.rules:
             raise MCPError("RULE_NOT_FOUND", f"Rule not found: {rule_id}")
@@ -1010,7 +1119,13 @@ class CascadeRulesMCPServer(MCPServer):
         self.tags -= set(rule.tags)
 
         # Audit log
-        self._add_audit_entry("delete", rule_id, {"rule_name": rule.name}, deleted_by)
+        self._add_audit_entry(
+            "delete",
+            rule_id,
+            {"rule_name": rule.name},
+            deleted_by,
+            summary=change_summary
+        )
 
         # Save to disk
         await self._save_rules()
@@ -1018,7 +1133,15 @@ class CascadeRulesMCPServer(MCPServer):
     # Tool implementations
     async def cascade_rule_create(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new rule."""
-        rule = await self._create_rule_internal(params, params["created_by"])
+        summary = params.get("change_summary", "").strip()
+        if not summary:
+            raise MCPError("MISSING_FIELD", "change_summary is required")
+
+        rule = await self._create_rule_internal(
+            params,
+            params["created_by"],
+            summary
+        )
         return {"created": True, "rule": rule.to_dict()}
 
     async def cascade_rule_get(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -1033,13 +1156,26 @@ class CascadeRulesMCPServer(MCPServer):
     async def cascade_rule_update(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Update an existing rule."""
         rule_id = params["rule_id"]
-        rule = await self._update_rule_internal(rule_id, params, params["updated_by"])
+        summary = params.get("change_summary", "").strip()
+        if not summary:
+            raise MCPError("MISSING_FIELD", "change_summary is required")
+
+        rule = await self._update_rule_internal(
+            rule_id,
+            params,
+            params["updated_by"],
+            summary
+        )
         return {"updated": True, "rule": rule.to_dict()}
 
     async def cascade_rule_delete(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Delete a rule."""
         rule_id = params["rule_id"]
-        await self._delete_rule_internal(rule_id, params["deleted_by"])
+        summary = params.get("change_summary", "").strip()
+        if not summary:
+            raise MCPError("MISSING_FIELD", "change_summary is required")
+
+        await self._delete_rule_internal(rule_id, params["deleted_by"], summary)
         return {"deleted": True}
 
     async def cascade_rule_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -1115,6 +1251,9 @@ class CascadeRulesMCPServer(MCPServer):
     async def cascade_rule_activate(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Activate a rule."""
         rule_id = params["rule_id"]
+        summary = params.get("change_summary", "").strip()
+        if not summary:
+            raise MCPError("MISSING_FIELD", "change_summary is required")
 
         if rule_id not in self.rules:
             raise MCPError("RULE_NOT_FOUND", f"Rule not found: {rule_id}")
@@ -1136,8 +1275,16 @@ class CascadeRulesMCPServer(MCPServer):
             rule.status = old_status
             raise MCPError("RULE_CONFLICT", f"Cannot activate rule due to conflicts: {'; '.join(conflicts)}")
 
+        rule.last_change_summary = summary
+
         # Audit log
-        self._add_audit_entry("activate", rule_id, {"old_status": old_status.value}, params["activated_by"])
+        self._add_audit_entry(
+            "activate",
+            rule_id,
+            {"old_status": old_status.value},
+            params["activated_by"],
+            summary=summary
+        )
 
         await self._save_rules()
         return {"activated": True, "rule": rule.to_dict()}
@@ -1145,6 +1292,9 @@ class CascadeRulesMCPServer(MCPServer):
     async def cascade_rule_deprecate(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Deprecate a rule."""
         rule_id = params["rule_id"]
+        summary = params.get("change_summary", "").strip()
+        if not summary:
+            raise MCPError("MISSING_FIELD", "change_summary is required")
 
         if rule_id not in self.rules:
             raise MCPError("RULE_NOT_FOUND", f"Rule not found: {rule_id}")
@@ -1156,8 +1306,16 @@ class CascadeRulesMCPServer(MCPServer):
         rule.status = RuleStatus.DEPRECATED
         rule.updated_at = datetime.utcnow().isoformat()
 
+        rule.last_change_summary = summary
+
         # Audit log
-        self._add_audit_entry("deprecate", rule_id, {"old_status": old_status.value}, params["deprecated_by"])
+        self._add_audit_entry(
+            "deprecate",
+            rule_id,
+            {"old_status": old_status.value},
+            params["deprecated_by"],
+            summary=summary
+        )
 
         await self._save_rules()
         return {"deprecated": True, "rule": rule.to_dict()}

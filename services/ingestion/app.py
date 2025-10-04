@@ -9,12 +9,16 @@ Provides a basic HTTP server for the ingestion service with:
 """
 
 import asyncio
+
 import json
 import logging
 import os
 import time
 from datetime import datetime
 from typing import Dict, Any
+
+import kafka
+from kafka.errors import KafkaError
 
 try:
     from aiohttp import web
@@ -30,14 +34,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class IngestionService:
-    """Ingestion service stub."""
+    """Ingestion service with Kafka integration."""
 
     def __init__(self):
         self.app = web.Application()
         self.triggers_count = 0
         self.last_trigger = None
         self.start_time = time.time()
-
+        
+        # Kafka configuration
+        kafka_brokers = os.getenv('KAFKA_BROKERS', 'localhost:9092')
+        self.kafka_producer = kafka.KafkaProducer(
+            bootstrap_servers=[kafka_brokers],
+            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+            key_serializer=lambda k: k.encode('utf-8') if k else None,
+            acks='all',
+            retries=3
+        )
+        
         # Setup routes
         self.app.router.add_get('/health', self.health)
         self.app.router.add_get('/metrics', self.metrics)
@@ -102,18 +116,25 @@ class IngestionService:
 
             logger.info(f"Trigger {trigger_id} received")
 
-            # Simulate some processing
-            await asyncio.sleep(0.1)
+            # Publish to Kafka repos.ingested topic
+            message = {
+                "repo": data.get("repo", "unknown"),
+                "ref": data.get("ref", "main"),
+                "path": data.get("path", "/data"),
+                "ts": self.last_trigger.isoformat()
+            }
 
-            # In a real implementation, this would:
-            # 1. Parse the trigger data
-            # 2. Send message to Kafka
-            # 3. Update status
+            # Send to Kafka
+            future = self.kafka_producer.send('repos.ingested', value=message, key=message["repo"])
+            # Wait for the message to be sent
+            record_metadata = future.get(timeout=10)
+            logger.info(f"Message sent to repos.ingested topic: {record_metadata.topic} partition {record_metadata.partition} offset {record_metadata.offset}")
 
             return web.json_response({
                 "status": "success",
                 "trigger_id": trigger_id,
                 "message": "Ingestion triggered successfully",
+                "kafka_message_sent": True,
                 "timestamp": self.last_trigger.isoformat(),
                 "data_received": bool(data),
                 "total_triggers": self.triggers_count
