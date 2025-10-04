@@ -9,12 +9,16 @@ Provides a basic HTTP server for the ingestion service with:
 """
 
 import asyncio
+
 import json
 import logging
 import os
 import time
 from datetime import datetime
 from typing import Dict, Any
+
+import kafka
+from kafka.errors import KafkaError
 
 try:
     from aiohttp import web
