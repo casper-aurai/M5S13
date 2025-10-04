@@ -14,6 +14,7 @@ Enforces the security rules defined in .windsurf/mcp.json to prevent:
 import os
 import re
 import logging
+from pathlib import PurePosixPath
 import json
 import time
 from pathlib import Path
@@ -350,6 +351,23 @@ def validate_request_security(request_data: Dict[str, Any]) -> bool:
 
     return check_value(request_data)
 
+    def _load_enforce_flag() -> bool:
+        try:
+            cfg = json.loads(Path(".windsurf/github-repo.json").read_text())
+            return bool(cfg.get("enforce_remote_issues", True))
+        except Exception:
+            return True
+
+    def deny_local_markdown_for_issues(intent: str, target_path: str) -> Optional[str]:
+        """Return a message if write should be denied, else None."""
+        if not _load_enforce_flag():
+            return None
+        low = (intent or "").lower()
+        if "create issue" in low or "issue" in low:
+            p = PurePosixPath(target_path)
+            if str(p).startswith("docs/") and p.suffix.lower() in {".md", ".mdx"}:
+                return "Local markdown issue creation is disabled. Use github.create_issue."
+        return None
 
 # Import here to avoid circular imports
 try:

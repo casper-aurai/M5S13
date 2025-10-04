@@ -1,0 +1,66 @@
+# Topic Labels
+- name: kafka
+  description: Kafka messaging and event streaming
+  color: 0052CC
+
+- name: weaviate
+  description: Vector database and embeddings
+  color: FF6B35
+
+- name: reporting
+  description: Report generation and artifact storage
+  color: 1DB8CD
+
+- name: airflow
+  description: Workflow orchestration and DAGs
+  color: 007A5C
+
+- name: observability
+  description: Monitoring, metrics, and logging
+  color: 8B5A96
+
+- name: dx
+  description: Developer experience and tooling
+  color: F39C12
+
+# Priority Labels
+- name: p0-critical
+  description: Critical priority - blocking other work
+  color: B60205
+
+- name: p1-high
+  description: High priority - important for current sprint
+  color: D93F0B
+
+- name: p2-medium
+  description: Medium priority - planned for upcoming work
+  color: FBCA04
+
+- name: p3-low
+  description: Low priority - nice to have or future work
+  color: 0E8A16
+
+# Status Labels
+- name: wave2-poc
+  description: Part of Wave 2 PoC implementation
+  color: 5319E7
+
+- name: ready-for-dev
+  description: Ready for development work
+  color: 159818
+
+- name: in-progress
+  description: Currently being worked on
+  color: 0052CC
+
+- name: blocked
+  description: Blocked by dependencies or issues
+  color: B60205
+
+- name: ready-for-review
+  description: Implementation complete, ready for review
+  color: FBCA04
+
+- name: approved
+  description: Approved and ready for merge
+  color: 0E8A16
