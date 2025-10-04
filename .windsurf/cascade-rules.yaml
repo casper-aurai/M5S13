@@ -278,21 +278,58 @@ cascadeRules:
         config.enforce_remote_issues: true
       message: "Local markdown issue creation is disabled. Use github.create_issue."
 
-  - name: "Wave-2 Work Items → GitHub"
+# --- NEW: GitHub Issue Automation Rules ---
+
+  - name: "Auto-Close Completed Tasks with GitHub Issues"
+    trigger:
+      whenTool: "task-master.task_complete"
+      condition:
+        descriptionContains: "github"
+    actions:
+      - tool: "github.comment_issue"
+        with:
+          number: "${task.github_issue_number}"
+          body: "✅ **TASK COMPLETED**\n\nTask marked as complete. Closing associated GitHub issue."
+      - tool: "github.close_issue"
+        with:
+          number: "${task.github_issue_number}"
+          reason: "completed"
+    labels: ["automation", "github-sync"]
+
+  - name: "Auto-Update Issue Progress for Development Tasks"
+    trigger:
+      whenTool: "task-master.task_update"
+      condition:
+        labelsAnyOf: ["ready-for-dev", "p1-high", "p2-medium", "p3-low", "enhancement", "bug", "feature"]
+        descriptionContains: "progress"
+    actions:
+      - tool: "github.comment_issue"
+        with:
+          number: "${task.github_issue_number}"
+          body: "🔄 **PROGRESS UPDATE**\n\nTask status updated. Development work in progress."
+    labels: ["automation", "github-sync"]
+
+  - name: "Auto-Create GitHub Issue for New Development Tasks"
     trigger:
       whenTool: "task-master.task_create"
       condition:
-        labelsAnyOf: ["kafka","weaviate","reporting","airflow","observability","dx","dgraph","storage","deployment","data-flow","architecture"]
+        labelsAnyOf: ["ready-for-dev", "p1-high", "p2-medium", "p3-low", "enhancement", "bug", "feature"]
     pre:
       - tool: "github.ensure_labels"
         with:
-          labels: ["wave2-poc","p1-high","ready-for-dev"]
+          labels: ["ready-for-dev", "automation"]
     actions:
       - tool: "github.create_issue"
         with:
-          title: "${task.title}"
-          body: "${task.description}"
-          labels: ["wave2-poc","ready-for-dev"]
+          title: "Auto: ${task.title}"
+          body: "${task.description}\n\n*Auto-created by cascade rules for development work.*"
+          labels: ["ready-for-dev", "automation"]
+    post:
+      - tool: "task-master.task_update"
+        with:
+          task_id: "${task.id}"
+          github_issue_number: "${result.number}"
+    labels: ["automation", "github-sync"]
 
   - name: "Close GitHub issues when tasks complete"
     trigger:

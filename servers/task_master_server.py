@@ -93,6 +93,7 @@ class Task:
         self.completed_at = completed_at
 
         self.metadata = metadata or {}
+        self.github_issue_number: Optional[int] = None
         self.depends_on = depends_on or []
         self.blocked_by = blocked_by or []
         self.subtasks = subtasks or []
@@ -119,7 +120,7 @@ class Task:
             "depends_on": self.depends_on,
             "blocked_by": self.blocked_by,
             "subtasks": self.subtasks,
-            "create_remote_issue": bool(self.create_remote_issue),
+            "github_issue_number": self.github_issue_number,
         }
 
 
@@ -952,10 +953,10 @@ class TaskMasterMCPServer(MCPServer):
                         "description": "Whether to open a remote issue",
                         "default": True
                     },
-                    "metadata": {
-                        "type": "object",
-                        "description": "Additional task metadata"
-                    }
+                    "github_issue_number": {
+                        "type": "integer",
+                        "description": "GitHub issue number associated with this task"
+                    },
                 },
                 "required": ["title"]
             },
@@ -1020,10 +1021,10 @@ class TaskMasterMCPServer(MCPServer):
                         "items": {"type": "string"},
                         "description": "Task IDs this task depends on"
                     },
-                    "metadata": {
-                        "type": "object",
-                        "description": "Additional task metadata"
-                    }
+                    "github_issue_number": {
+                        "type": "integer",
+                        "description": "GitHub issue number associated with this task"
+                    },
                 },
                 "required": ["task_id"]
             },
@@ -1166,6 +1167,7 @@ class TaskMasterMCPServer(MCPServer):
         labels = params.get("labels") or []
         project_id = params.get("project_id")
         parent_id = params.get("parent_id")
+        github_issue_number = params.get("github_issue_number")
         depends_on = params.get("depends_on", [])
         metadata = params.get("metadata", {})
         requested_remote_issue = params.get("create_remote_issue", True)
@@ -1187,6 +1189,10 @@ class TaskMasterMCPServer(MCPServer):
             metadata=metadata,
             create_remote_issue=create_remote_issue,
         )
+
+        # Set github issue number if provided
+        if github_issue_number:
+            task.github_issue_number = github_issue_number
 
         # Set dependencies
         task.depends_on = depends_on
@@ -1283,8 +1289,8 @@ class TaskMasterMCPServer(MCPServer):
             task.assignee = params["assignee"]
         if "labels" in params:
             task.labels = params["labels"]
-        if "depends_on" in params:
-            task.depends_on = params["depends_on"]
+        if "github_issue_number" in params:
+            task.github_issue_number = params["github_issue_number"]
         if "metadata" in params:
             task.metadata.update(params["metadata"])
 
