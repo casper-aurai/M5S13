@@ -272,7 +272,7 @@ repo-root/
 
 ### Code Standards
 - **Python**: Black formatting, type hints, comprehensive error handling
-- **Commits**: Conventional commit format with issue/PR references
+- **Commits**: Conventional commit format with issue/PR references, and land every edit in its own descriptive commit so Cascade/MCP automation can trace task boundaries
 - **Tests**: Unit tests for all business logic
 - **Documentation**: Update README and docs for user-facing changes
 
