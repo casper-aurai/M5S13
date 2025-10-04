@@ -54,33 +54,43 @@ class AnalyzerService:
         self.messages_consumed = 0
 
         # Weaviate configuration
-        weaviate_url = os.getenv('WEAVIATE_URL', 'http://localhost:8080')
+        weaviate_url = os.getenv('WEAVIATE_URL', 'http://localhost:8082')
         self.weaviate_client = weaviate.Client(weaviate_url)
-        self.weaviate_class = os.getenv('WEAVIATE_CLASS', 'AnalyzerDocument')
-        self.weaviate_text_property = os.getenv('WEAVIATE_TEXT_PROPERTY', 'text')
+        self.weaviate_class = os.getenv('WEAVIATE_CLASS', 'DocChunk')
+        self.weaviate_text_property = os.getenv('WEAVIATE_TEXT_PROPERTY', 'chunkText')
         self.weaviate_metadata_property = os.getenv('WEAVIATE_METADATA_PROPERTY', 'metadata')
 
-        # Kafka configuration (disabled for now)
-        # kafka_brokers = os.getenv('KAFKA_BROKERS', 'localhost:9092')
+        # Kafka configuration (with graceful handling)
+        kafka_brokers = os.getenv('KAFKA_BROKERS', 'localhost:9092')
+        self.kafka_available = False
         
-        # Kafka consumer for code.mined topic (disabled)
-        # self.consumer = KafkaConsumer(
-        #     'code.mined',
-        #     bootstrap_servers=[kafka_brokers],
-        #     group_id='analyzer-service-group',
-        #     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-        #     auto_offset_reset='earliest',
-        #     enable_auto_commit=True
-        # )
-        
-        # Kafka producer for code.analyzed topic (disabled)
-        # self.producer = KafkaProducer(
-        #     bootstrap_servers=[kafka_brokers],
-        #     value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-        #     key_serializer=lambda k: k.encode('utf-8') if k else None,
-        #     acks='all',
-        #     retries=3
-        # )
+        try:
+            # Kafka consumer for code.mined topic
+            self.consumer = KafkaConsumer(
+                'code.mined',
+                bootstrap_servers=[kafka_brokers],
+                group_id='analyzer-service-group',
+                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                auto_offset_reset='earliest',
+                enable_auto_commit=True,
+                consumer_timeout_ms=1000  # Short timeout for graceful handling
+            )
+            
+            # Kafka producer for code.analyzed topic
+            self.producer = KafkaProducer(
+                bootstrap_servers=[kafka_brokers],
+                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+                key_serializer=lambda k: k.encode('utf-8') if k else None,
+                acks='all',
+                retries=3
+            )
+            self.kafka_available = True
+            logger.info("Kafka integration enabled")
+            
+        except Exception as e:
+            logger.warning(f"Kafka not available, running without Kafka integration: {e}")
+            self.consumer = None
+            self.producer = None
         
         # Setup routes
         self.app.router.add_get('/health', self.health)
@@ -90,10 +100,11 @@ class AnalyzerService:
         self.app.router.add_post('/embed', self.embed)
         self.app.router.add_get('/search', self.search)
         
-        # Start Kafka consumer in background (disabled)
-        # import threading
-        # self.consumer_thread = threading.Thread(target=self._consume_messages, daemon=True)
-        # self.consumer_thread.start()
+        # Start Kafka consumer in background (only if available)
+        if self.kafka_available:
+            import threading
+            self.consumer_thread = threading.Thread(target=self._consume_messages, daemon=True)
+            self.consumer_thread.start()
         
     def _consume_messages(self):
         """Consume messages from code.mined topic."""
@@ -172,6 +183,9 @@ class AnalyzerService:
 
     async def health(self, request):
         """Health check endpoint."""
+        # Bootstrap Weaviate schema if needed
+        await self._ensure_weaviate_schema()
+        
         return web.json_response({
             "status": "healthy",
             "service": "analyzer",
@@ -179,7 +193,8 @@ class AnalyzerService:
             "uptime_seconds": int(time.time() - self.start_time),
             "messages_consumed": self.messages_consumed,
             "files_analyzed": self.files_analyzed,
-            "kafka_consumer_running": self.consumer_thread.is_alive(),
+            "kafka_available": self.kafka_available,
+            "kafka_consumer_running": self.kafka_available and self.consumer_thread.is_alive() if hasattr(self, 'consumer_thread') else False,
             "weaviate_connected": await self._is_weaviate_ready()
         })
 
