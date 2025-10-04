@@ -21,6 +21,11 @@ except ImportError:
     # For standalone execution
     from base_mcp_server import MCPServer, MCPError, Tool
 
+try:
+    from .security_enforcer import deny_local_markdown_for_issues
+except ImportError:  # pragma: no cover - fallback for standalone usage
+    from security_enforcer import deny_local_markdown_for_issues  # type: ignore
+
 
 class FilesystemMCPServer(MCPServer):
     """Filesystem MCP Server implementation."""
@@ -140,6 +145,10 @@ class FilesystemMCPServer(MCPServer):
                         "description": "Write mode: 'overwrite' or 'append' (default: overwrite)",
                         "enum": ["overwrite", "append"],
                         "default": "overwrite"
+                    },
+                    "intent": {
+                        "type": "string",
+                        "description": "High-level intent for the write (e.g., 'create issue')"
                     }
                 },
                 "required": ["path", "content"]
@@ -306,8 +315,19 @@ class FilesystemMCPServer(MCPServer):
         content = params["content"]
         encoding = params.get("encoding", "utf-8")
         mode = params.get("mode", "overwrite")
+        intent = params.get("intent", "")
 
         resolved_path = self.validate_path(path)
+
+        try:
+            policy_path = resolved_path.relative_to(self.workspace_root).as_posix()
+        except ValueError:
+            policy_path = resolved_path.as_posix()
+
+        denial_message = deny_local_markdown_for_issues(intent=intent, target_path=policy_path)
+        if denial_message:
+            raise MCPError("POLICY_DENY", denial_message)
+
         self.check_write_permission(resolved_path)
 
         # Ensure parent directory exists
