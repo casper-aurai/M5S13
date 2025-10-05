@@ -94,7 +94,6 @@ kafka-topics:
 	@echo "Creating repos.ingested topic..."
 	@podman exec freshpoc-kafka kafka-topics --bootstrap-server localhost:9092 --create --topic repos.ingested --partitions 3 --replication-factor 1 --if-not-exists || true
 	@echo "Creating code.mined topic..."
-	@podman exec freshpoc-kafka kafka-topics --bootstrap-server localhost:9092 --create --topic code.mined --partitions 3 --replication-factor 1 --if-not-exists || true
 	@echo "Creating code.analyzed topic..."
 	@podman exec freshpoc-kafka kafka-topics --bootstrap-server localhost:9092 --create --topic code.analyzed --partitions 3 --replication-factor 1 --if-not-exists || true
 	@echo "Creating graph.apply topic..."
@@ -102,15 +101,21 @@ kafka-topics:
 	@echo "✅ Kafka topics created successfully"
 	@make topics
 
-	@echo "Cleaning up all data and containers..."
-	podman-compose -f docker/docker-compose.yml down -v
-	podman volume prune -f
-	podman system prune -f
-	@echo "Removing local data directories..."
-	rm -rf data/
-	rm -rf reports/generated/
+# Quick demo to run the entire pipeline end-to-end
+demo:
+	@echo "🚀 Starting FreshPOC demo..."
+	@echo "Creating Kafka topics..."
+	@make kafka-topics
+	@echo "Starting services..."
+	@make up
+	@echo "Waiting for services to be ready..."
+	@sleep 30
+	@curl -X POST http://localhost:8080/trigger -H "Content-Type: application/json" -d '{"repo":"demo","ref":"main"}' || echo "Ingestion service not ready"
+	@echo "Demo completed! Check Grafana for metrics and MinIO for reports."
+	@echo "Access Grafana: http://localhost:3000"
+	@echo "Access MinIO: http://localhost:9001"
 
-# ========================================
+# ======================================== 
 # DEVELOPMENT TOOLS
 # ========================================
 
@@ -120,26 +125,24 @@ shell:
 	@echo ""
 	@echo "Usage: podman exec -it <container_name> /bin/bash"
 
-format:
-	@echo "Formatting Python code..."
-	black servers/ services/ airflow/ --line-length 88
-	isort servers/ services/ airflow/ --profile black
+pre-commit:
+	@echo "Installing pre-commit hooks..."
+	pre-commit install
+	@echo "Running pre-commit on all files..."
+	pre-commit run --all-files
 
-lint:
-	@echo "Running linting checks..."
-	flake8 servers/ services/ airflow/ --max-line-length 88 --extend-ignore E203,W503
-	mypy servers/ --ignore-missing-imports
-
-test:
-	@echo "Running tests..."
-	pytest servers/ -v
+seed:
+	@echo "Running seed scripts..."
+	@echo "Seeding Dgraph with initial data..."
+	@python scripts/seed_dgraph.py || echo "Seed script not found"
+	@echo "Seeding Kafka topics..."
+	@python scripts/seed_kafka.py || echo "Seed script not found"
 
 # ========================================
 # MCP VALIDATION
 # ========================================
 
 validate:
-	@echo "Running MCP server validation..."
 	python scripts/validate_mcp.py
 
 validate-mcp:

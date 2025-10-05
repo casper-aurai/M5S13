@@ -14,7 +14,8 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import Dict, Any
+
+from aiohttp import web
 
 # Add kafka-python dependency
 try:
