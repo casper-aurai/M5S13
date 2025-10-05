@@ -1,4 +1,4 @@
-#/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Analyzer Service Stub
 
@@ -8,15 +8,6 @@ Provides a basic HTTP server for the analyzer service with:
 - Placeholder endpoints for service-specific functionality
 """
 
-import asyncio
-import json
-import logging
-import os
-import time
-from datetime import datetime
-from uuid import uuid4
-
-# Add aiohttp dependency
 try:
     from aiohttp import web
 except ImportError:
@@ -37,7 +28,8 @@ except ImportError:
     print("weaviate-client not installed. Install with: pip install weaviate-client")
     exit(1)
 
-# Configure logging
+# Import DocChunk model
+from .models.doc_chunk import DocChunk
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -270,10 +262,10 @@ class AnalyzerService:
             )
 
     async def embed(self, request):
-        """Persist analyzer insights to Weaviate."""
+        """Store analyzer snippets in Weaviate using DocChunk model."""
         try:
             payload = await request.json()
-        except Exception as exc:  # pragma: no cover - aiohttp specific exception types
+        except Exception as exc:
             logger.error(f"Invalid JSON payload for /embed: {exc}")
             return web.json_response(
                 {"status": "error", "message": "Invalid JSON payload"},
@@ -288,37 +280,33 @@ class AnalyzerService:
             )
 
         metadata = payload.get('metadata', {})
-        if metadata and not isinstance(metadata, dict):
-            return web.json_response(
-                {"status": "error", "message": "'metadata' must be an object"},
-                status=400
-            )
-
-        class_name = payload.get('class', self.weaviate_class)
-        object_id = payload.get('id') or str(uuid4())
+        repo = payload.get('repo')
+        file_path = payload.get('file')
+        
         # Generate a dummy vector for PoC (384 dimensions of random values)
         import random
         dummy_vector = [random.random() for _ in range(384)]
         
-        data_object = {
-            self.weaviate_text_property: text,
-            self.weaviate_metadata_property: json.dumps(metadata) if metadata else None,
-            'vector': dummy_vector,
-            'created_at': datetime.utcnow().isoformat()
-        }
-
-        # Remove None values to avoid schema violations
-        data_object = {key: value for key, value in data_object.items() if value is not None}
+        # Create DocChunk instance
+        doc_chunk = DocChunk(
+            text=text,
+            vector=dummy_vector,
+            metadata=metadata,
+            repo=repo,
+            file_path=file_path
+        )
+        
+        data_object = doc_chunk.to_weaviate_format()
 
         try:
             await asyncio.to_thread(
                 self.weaviate_client.data_object.create,
                 data_object,
-                class_name=class_name,
-                uuid=object_id,
+                class_name=self.weaviate_class,
+                uuid=doc_chunk.chunk_id,
                 vector=dummy_vector
             )
-        except Exception as exc:  # pragma: no cover - depends on weaviate availability
+        except Exception as exc:
             logger.error(f"Failed to store object in Weaviate: {exc}")
             return web.json_response(
                 {"status": "error", "message": str(exc)},
@@ -328,15 +316,15 @@ class AnalyzerService:
         return web.json_response(
             {
                 "status": "success",
-                "id": object_id,
-                "class": class_name,
+                "id": doc_chunk.chunk_id,
+                "class": self.weaviate_class,
                 "properties": data_object
             },
             status=201
         )
 
     async def search(self, request):
-        """Search stored analyzer snippets in Weaviate."""
+        """Search stored snippets in Weaviate with improved vector search."""
         query_text = request.query.get('q') or request.query.get('query')
         if not query_text:
             return web.json_response(
@@ -354,15 +342,15 @@ class AnalyzerService:
             )
 
         class_name = request.query.get('class', self.weaviate_class)
-
+        
+        # Generate query vector (same method as for documents)
+        import random
+        query_vector = [random.random() for _ in range(384)]
+        
         def _execute_search():
-            # Generate a simple vector for the query (same method as for documents)
-            import random
-            query_vector = [random.random() for _ in range(384)]
-            
             return (
                 self.weaviate_client.query
-                .get(class_name, [self.weaviate_text_property, self.weaviate_metadata_property, 'created_at'])
+                .get(class_name, [self.weaviate_text_property, self.weaviate_metadata_property, 'created_at', 'repo', 'file', 'chunkId'])
                 .with_near_vector({"vector": query_vector})
                 .with_limit(limit)
                 .do()
@@ -370,7 +358,7 @@ class AnalyzerService:
 
         try:
             response = await asyncio.to_thread(_execute_search)
-        except Exception as exc:  # pragma: no cover - depends on weaviate availability
+        except Exception as exc:
             logger.error(f"Weaviate search failed: {exc}")
             return web.json_response(
                 {"status": "error", "message": str(exc)},
@@ -378,8 +366,22 @@ class AnalyzerService:
             )
 
         hits = response.get('data', {}).get('Get', {}).get(class_name, [])
+        
+        # Convert results to DocChunk format for consistency
+        results = []
+        for hit in hits:
+            properties = hit.get('_additional', {}).get('properties', {})
+            results.append({
+                "text": properties.get(self.weaviate_text_property, ''),
+                "similarity": hit.get('_additional', {}).get('distance', 0),
+                "metadata": properties.get(self.weaviate_metadata_property, {}),
+                "repo": properties.get('repo'),
+                "file": properties.get('file'),
+                "chunk_id": properties.get('chunkId')
+            })
+        
         return web.json_response(
-            {"status": "success", "results": hits, "total": len(hits)}
+            {"status": "success", "results": results, "total": len(results)}
         )
 
     async def _ensure_weaviate_schema(self):

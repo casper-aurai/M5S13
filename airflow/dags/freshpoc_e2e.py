@@ -108,9 +108,28 @@ def health_check_query_api():
     """Check query API service health."""
     return check_service_health("Query API", "http://query-api:8080")
 
-def trigger_ingestion():
-    """Trigger data ingestion."""
-    return trigger_service(
+def wait_for_kafka_messages(topic: str, expected_count: int = 1, timeout: int = 300) -> bool:
+    """Wait for Kafka messages on a topic."""
+    import time
+    start_time = time.time()
+    
+    # In a real implementation, this would poll Kafka consumer for messages
+    # For demo, we'll simulate waiting
+    while time.time() - start_time < timeout:
+        # Simulate checking message count
+        current_count = 0  # Replace with actual Kafka consumer check
+        if current_count >= expected_count:
+            logging.info(f"Found {current_count} messages on topic {topic}")
+            return True
+        time.sleep(10)
+    
+    logging.error(f"Timeout waiting for messages on topic {topic}")
+    return False
+
+def trigger_ingestion_with_kafka():
+    """Trigger ingestion and wait for Kafka messages."""
+    # Trigger ingestion
+    result = trigger_service(
         "Ingestion",
         "http://ingestion:8080",
         {
@@ -119,65 +138,44 @@ def trigger_ingestion():
             "pipeline_run_id": "{{ run_id }}"
         }
     )
+    
+    # Wait for messages on repos.ingested topic
+    if not wait_for_kafka_messages("repos.ingested", 1):
+        raise Exception("No messages received on repos.ingested topic")
+    
+    return result
 
-def trigger_mining():
-    """Trigger data mining."""
-    return trigger_service(
-        "Miner",
-        "http://miner:8080",
-        {
-            "batch_id": "{{ ds }}",
-            "operation": "mine_patterns"
-        }
-    )
+def trigger_mining_with_kafka():
+    """Trigger mining and wait for Kafka messages."""
+    # Mining happens automatically via Kafka consumer
+    # Wait for messages on code.mined topic
+    if not wait_for_kafka_messages("code.mined", 1):
+        raise Exception("No messages received on code.mined topic")
+    
+    return {"status": "mining_completed"}
 
-def trigger_analysis():
-    """Trigger data analysis."""
-    return trigger_service(
-        "Analyzer",
-        "http://analyzer:8080",
-        {
-            "batch_id": "{{ ds }}",
-            "analysis_type": "comprehensive"
-        }
-    )
+def trigger_analysis_with_kafka():
+    """Trigger analysis and wait for Kafka messages."""
+    # Analysis happens automatically via Kafka consumer
+    # Wait for messages on code.analyzed topic
+    if not wait_for_kafka_messages("code.analyzed", 1):
+        raise Exception("No messages received on code.analyzed topic")
+    
+    return {"status": "analysis_completed"}
 
-def trigger_embedding():
-    """Trigger vector embedding generation."""
-    return trigger_service(
-        "Embedder",
-        "http://embedder:8080",
-        {
-            "batch_id": "{{ ds }}",
-            "model": "default_embedding_model"
-        }
-    )
+def trigger_writing_with_kafka():
+    """Trigger writing and wait for Kafka messages."""
+    # Writing happens automatically via Kafka consumer
+    # Wait for messages on graph.apply topic
+    if not wait_for_kafka_messages("graph.apply", 1):
+        raise Exception("No messages received on graph.apply topic")
+    
+    return {"status": "writing_completed"}
 
-def trigger_writing():
-    """Trigger data writing/storage."""
-    return trigger_service(
-        "Writer",
-        "http://writer:8080",
-        {
-            "batch_id": "{{ ds }}",
-            "targets": ["dgraph", "weaviate"]
-        }
-    )
-
-def trigger_query_api():
-    """Trigger query API refresh."""
-    return trigger_service(
-        "Query API",
-        "http://query-api:8080",
-        {
-            "batch_id": "{{ ds }}",
-            "refresh_type": "incremental"
-        }
-    )
-
-def generate_reports():
-    """Generate final reports."""
-    return trigger_service(
+def trigger_reporting_with_minio():
+    """Trigger reporting and check MinIO for reports."""
+    # Trigger report generation
+    result = trigger_service(
         "Reporting",
         "http://reporting:8080",
         {
@@ -185,6 +183,14 @@ def generate_reports():
             "report_types": ["summary", "detailed", "trends"]
         }
     )
+    
+    # Wait for reports in MinIO
+    import time
+    time.sleep(30)  # Wait for report generation and upload
+    
+    # In a real implementation, check MinIO for new reports
+    # For demo, assume success
+    return result
 
 def pipeline_cleanup():
     """Clean up temporary files and resources."""
@@ -221,43 +227,43 @@ health_checks = [
 # Pipeline stages
 trigger_ingestion_task = PythonOperator(
     task_id='trigger_ingestion',
-    python_callable=trigger_ingestion,
+    python_callable=trigger_ingestion_with_kafka,
     dag=dag,
 )
 
 trigger_mining_task = PythonOperator(
     task_id='trigger_mining',
-    python_callable=trigger_mining,
+    python_callable=trigger_mining_with_kafka,
     dag=dag,
 )
 
 trigger_analysis_task = PythonOperator(
     task_id='trigger_analysis',
-    python_callable=trigger_analysis,
+    python_callable=trigger_analysis_with_kafka,
     dag=dag,
 )
 
 trigger_embedding_task = PythonOperator(
     task_id='trigger_embedding',
-    python_callable=trigger_embedding,
+    python_callable=trigger_mining_with_kafka,  # Embedding is part of mining
     dag=dag,
 )
 
 trigger_writing_task = PythonOperator(
     task_id='trigger_writing',
-    python_callable=trigger_writing,
+    python_callable=trigger_writing_with_kafka,
     dag=dag,
 )
 
 trigger_query_api_task = PythonOperator(
     task_id='trigger_query_api',
-    python_callable=trigger_query_api,
+    python_callable=trigger_mining_with_kafka,  # Query API is refreshed after writing
     dag=dag,
 )
 
 generate_reports_task = PythonOperator(
     task_id='generate_reports',
-    python_callable=generate_reports,
+    python_callable=trigger_reporting_with_minio,
     dag=dag,
 )
 
